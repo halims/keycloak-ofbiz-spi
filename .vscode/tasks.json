@@ -1,0 +1,59 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Keycloak OFBiz SPI",
+			"type": "shell",
+			"command": "mvn",
+			"args": [
+				"clean",
+				"package"
+			],
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": [],
+			"detail": "Builds the Keycloak OFBiz SPI JAR file"
+		},
+		{
+			"label": "Run Tests",
+			"type": "shell",
+			"command": "mvn",
+			"args": ["test"],
+			"group": "test",
+			"problemMatcher": [],
+			"detail": "Runs unit tests for the project"
+		},
+		{
+			"label": "Deploy to Keycloak",
+			"type": "shell",
+			"command": "./scripts/deploy.sh",
+			"group": "build",
+			"dependsOn": "Build Keycloak OFBiz SPI",
+			"detail": "Builds and deploys the SPI to Keycloak"
+		},
+		{
+			"label": "Start Docker Environment",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["up", "-d"],
+			"group": "build",
+			"detail": "Starts the Docker development environment with Keycloak and MySQL"
+		},
+		{
+			"label": "Stop Docker Environment",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["down"],
+			"group": "build",
+			"detail": "Stops the Docker development environment"
+		},
+		{
+			"label": "View Docker Logs",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["logs", "-f"],
+			"group": "test",
+			"detail": "Shows live logs from Docker containers"
+		}
+	]
+}

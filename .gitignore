@@ -1,0 +1,53 @@
+# Build artifacts
+target/
+*.jar
+*.war
+*.ear
+
+# IDE files
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/settings.json
+.vscode/launch.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+*.tmp
+
+# Docker volumes
+mysql_data/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.swp
+*.swo
+.tmp/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
