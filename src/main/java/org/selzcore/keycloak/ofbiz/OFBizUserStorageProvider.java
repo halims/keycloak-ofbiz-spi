@@ -96,17 +96,25 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         }
         
         try (Connection connection = connectionProvider.getConnection()) {
-            String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, " +
+            // Enhanced SQL to include tenant and custom attributes
+            String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, ul.party_id, " +
                         "p.first_name, p.last_name, p.personal_title, " +
-                        "cm.info_string as email " +
+                        "cm.info_string as email, " +
+                        "pr.role_type_id as tenant_role, " +
+                        "pg.group_id as tenant_group, " +
+                        "pt.party_type_id as party_type " +
                         "FROM user_login ul " +
                         "LEFT JOIN person p ON ul.party_id = p.party_id " +
                         "LEFT JOIN party_contact_mech pcm ON p.party_id = pcm.party_id AND pcm.thru_date IS NULL " +
                         "LEFT JOIN contact_mech cm ON pcm.contact_mech_id = cm.contact_mech_id " +
                         "AND cm.contact_mech_type_id = 'EMAIL_ADDRESS' " +
+                        "LEFT JOIN party_role pr ON ul.party_id = pr.party_id AND pr.thru_date IS NULL " +
+                        "LEFT JOIN party_group_member pgm ON ul.party_id = pgm.party_id AND pgm.thru_date IS NULL " +
+                        "LEFT JOIN party_group pg ON pgm.party_id_to = pg.party_id " +
+                        "LEFT JOIN party pt ON ul.party_id = pt.party_id " +
                         "WHERE ul.user_login_id = ? AND ul.enabled = 'Y'";
             
-            logger.trace("Executing SQL query for user '{}': {}", username, sql);
+            logger.trace("Executing enhanced SQL query for user '{}' with tenant info: {}", username, sql);
             
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, username);
@@ -146,18 +154,26 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         }
         
         try (Connection connection = connectionProvider.getConnection()) {
-            String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, " +
+            // Enhanced SQL to include tenant and custom attributes
+            String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, ul.party_id, " +
                         "p.first_name, p.last_name, p.personal_title, " +
-                        "cm.info_string as email " +
+                        "cm.info_string as email, " +
+                        "pr.role_type_id as tenant_role, " +
+                        "pg.group_id as tenant_group, " +
+                        "pt.party_type_id as party_type " +
                         "FROM user_login ul " +
                         "JOIN person p ON ul.party_id = p.party_id " +
                         "JOIN party_contact_mech pcm ON p.party_id = pcm.party_id AND pcm.thru_date IS NULL " +
                         "JOIN contact_mech cm ON pcm.contact_mech_id = cm.contact_mech_id " +
+                        "LEFT JOIN party_role pr ON ul.party_id = pr.party_id AND pr.thru_date IS NULL " +
+                        "LEFT JOIN party_group_member pgm ON ul.party_id = pgm.party_id AND pgm.thru_date IS NULL " +
+                        "LEFT JOIN party_group pg ON pgm.party_id_to = pg.party_id " +
+                        "LEFT JOIN party pt ON ul.party_id = pt.party_id " +
                         "WHERE cm.contact_mech_type_id = 'EMAIL_ADDRESS' " +
                         "AND cm.info_string = ? " +
                         "AND ul.enabled = 'Y'";
             
-            logger.trace("Executing SQL query for email '{}': {}", email, sql);
+            logger.trace("Executing enhanced SQL query for email '{}' with tenant info: {}", email, sql);
             
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, email);
@@ -376,7 +392,7 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     }
 
     /**
-     * Maps database result set to UserModel
+     * Maps database result set to UserModel with tenant and custom attributes
      */
     private UserModel mapUserFromResultSet(RealmModel realm, ResultSet rs) throws SQLException {
         String username = rs.getString("user_login_id");
@@ -384,7 +400,137 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         String lastName = rs.getString("last_name");
         String email = rs.getString("email");
         boolean enabled = "Y".equals(rs.getString("enabled"));
+        String partyId = rs.getString("party_id");
         
-        return new OFBizUserAdapter(session, realm, model, username, firstName, lastName, email, enabled);
+        // Extract tenant information
+        String tenantRole = rs.getString("tenant_role");
+        String tenantGroup = rs.getString("tenant_group");
+        String partyType = rs.getString("party_type");
+        
+        logger.debug("Mapping user '{}' with tenant info - Role: '{}', Group: '{}', PartyType: '{}'", 
+                    username, tenantRole, tenantGroup, partyType);
+        
+        // Determine tenant based on available data
+        String tenant = determineTenant(tenantRole, tenantGroup, partyType, partyId);
+        
+        // Get custom attributes configuration
+        Map<String, String> customAttributes = getCustomAttributesFromDatabase(partyId);
+        
+        return new OFBizUserAdapter(session, realm, model, username, firstName, lastName, email, enabled, tenant, customAttributes);
+    }
+    
+    /**
+     * Determines the tenant for a user based on OFBiz data
+     */
+    private String determineTenant(String tenantRole, String tenantGroup, String partyType, String partyId) {
+        // Priority: Group > Role > PartyType > PartyId
+        if (tenantGroup != null && !tenantGroup.trim().isEmpty()) {
+            logger.trace("Using tenant group '{}' as tenant for party '{}'", tenantGroup, partyId);
+            return tenantGroup;
+        }
+        
+        if (tenantRole != null && !tenantRole.trim().isEmpty()) {
+            logger.trace("Using tenant role '{}' as tenant for party '{}'", tenantRole, partyId);
+            return tenantRole;
+        }
+        
+        if (partyType != null && !partyType.trim().isEmpty()) {
+            logger.trace("Using party type '{}' as tenant for party '{}'", partyType, partyId);
+            return partyType;
+        }
+        
+        // Fallback to party ID as tenant
+        logger.trace("Using party ID '{}' as fallback tenant", partyId);
+        return partyId;
+    }
+    
+    /**
+     * Retrieves custom attributes from database based on configuration
+     */
+    private Map<String, String> getCustomAttributesFromDatabase(String partyId) {
+        Map<String, String> attributes = new HashMap<>();
+        
+        String customAttributesConfig = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_CUSTOM_ATTRIBUTES);
+        if (customAttributesConfig == null || customAttributesConfig.trim().isEmpty()) {
+            logger.trace("No custom attributes configured for party '{}'", partyId);
+            return attributes;
+        }
+        
+        logger.debug("Loading custom attributes for party '{}' with config: {}", partyId, customAttributesConfig);
+        
+        try (Connection connection = connectionProvider.getConnection()) {
+            String[] mappings = customAttributesConfig.split(",");
+            
+            for (String mapping : mappings) {
+                String[] parts = mapping.trim().split(":");
+                if (parts.length == 2) {
+                    String attributeName = parts[0].trim();
+                    String ofbizField = parts[1].trim();
+                    
+                    String value = getCustomAttributeValue(connection, partyId, ofbizField);
+                    if (value != null) {
+                        attributes.put(attributeName, value);
+                        logger.trace("Mapped custom attribute '{}' = '{}' for party '{}'", attributeName, value, partyId);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            logger.error("Error loading custom attributes for party '{}': {}", partyId, e.getMessage(), e);
+        }
+        
+        return attributes;
+    }
+    
+    /**
+     * Gets a specific custom attribute value from OFBiz database
+     */
+    private String getCustomAttributeValue(Connection connection, String partyId, String fieldMapping) throws SQLException {
+        // Support different field mapping patterns
+        if (fieldMapping.startsWith("party_attribute.")) {
+            // party_attribute.attr_name format
+            String attrName = fieldMapping.substring("party_attribute.".length());
+            String sql = "SELECT attr_value FROM party_attribute WHERE party_id = ? AND attr_name = ?";
+            
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setString(1, partyId);
+                stmt.setString(2, attrName);
+                
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString("attr_value");
+                    }
+                }
+            }
+        } else if (fieldMapping.startsWith("party.")) {
+            // party.field_name format
+            String fieldName = fieldMapping.substring("party.".length());
+            String sql = "SELECT " + fieldName + " FROM party WHERE party_id = ?";
+            
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setString(1, partyId);
+                
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(fieldName);
+                    }
+                }
+            }
+        } else if (fieldMapping.startsWith("person.")) {
+            // person.field_name format
+            String fieldName = fieldMapping.substring("person.".length());
+            String sql = "SELECT " + fieldName + " FROM person WHERE party_id = ?";
+            
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setString(1, partyId);
+                
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(fieldName);
+                    }
+                }
+            }
+        }
+        
+        return null;
     }
 }

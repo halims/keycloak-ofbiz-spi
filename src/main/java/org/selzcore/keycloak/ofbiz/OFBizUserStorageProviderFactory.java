@@ -29,6 +29,8 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public static final String CONFIG_KEY_VALIDATION_QUERY = "validationQuery";
     public static final String CONFIG_KEY_POOL_SIZE = "poolSize";
     public static final String CONFIG_KEY_ENABLED_REALMS = "enabledRealms";
+    public static final String CONFIG_KEY_TENANT_ATTRIBUTE = "tenantAttribute";
+    public static final String CONFIG_KEY_CUSTOM_ATTRIBUTES = "customAttributes";
 
     @Override
     public OFBizUserStorageProvider create(KeycloakSession session, ComponentModel model) {
@@ -138,6 +140,19 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                     .name(CONFIG_KEY_ENABLED_REALMS)
                     .label("Enabled Realms")
                     .helpText("Comma-separated list of realm names where this provider should be active (optional, leave empty to allow all)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_TENANT_ATTRIBUTE)
+                    .label("Tenant Attribute Name")
+                    .helpText("Name of the user attribute to store tenant information (default: 'tenant')")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("tenant")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_CUSTOM_ATTRIBUTES)
+                    .label("Custom Attribute Mappings")
+                    .helpText("Comma-separated list of OFBiz field mappings in format 'attributeName:ofbizField' (e.g., 'department:dept_id,location:location_code')")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .add()
                 .build();

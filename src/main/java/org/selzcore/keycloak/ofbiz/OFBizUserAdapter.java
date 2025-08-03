@@ -9,6 +9,7 @@ import org.keycloak.storage.adapter.AbstractUserAdapterFederatedStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,18 +25,29 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     private final String lastName;
     private final String email;
     private final boolean enabled;
+    private final String tenant;
+    private final Map<String, String> customAttributes;
 
     public OFBizUserAdapter(KeycloakSession session, RealmModel realm, ComponentModel model,
                            String username, String firstName, String lastName, String email, boolean enabled) {
+        this(session, realm, model, username, firstName, lastName, email, enabled, null, new HashMap<>());
+    }
+
+    public OFBizUserAdapter(KeycloakSession session, RealmModel realm, ComponentModel model,
+                           String username, String firstName, String lastName, String email, boolean enabled,
+                           String tenant, Map<String, String> customAttributes) {
         super(session, realm, model);
         this.username = username;
         this.firstName = firstName;
         this.lastName = lastName;
         this.email = email;
         this.enabled = enabled;
+        this.tenant = tenant;
+        this.customAttributes = customAttributes != null ? customAttributes : new HashMap<>();
         
-        logger.debug("Created OFBizUserAdapter for user '{}' in realm '{}' (email: '{}', enabled: {})", 
-                    username, realm.getName(), email != null ? email : "none", enabled);
+        logger.debug("Created OFBizUserAdapter for user '{}' in realm '{}' (email: '{}', enabled: {}, tenant: '{}', customAttrs: {})", 
+                    username, realm.getName(), email != null ? email : "none", enabled, 
+                    tenant != null ? tenant : "none", this.customAttributes.size());
     }
 
     @Override
@@ -135,12 +147,45 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
         attributes.add("enabled", Boolean.toString(isEnabled()));
         attributes.add("emailVerified", Boolean.toString(isEmailVerified()));
         
+        // Add tenant information
+        if (tenant != null && !tenant.trim().isEmpty()) {
+            String tenantAttributeName = storageProviderModel.get("tenantAttribute");
+            if (tenantAttributeName == null || tenantAttributeName.trim().isEmpty()) {
+                tenantAttributeName = "tenant"; // default
+            }
+            attributes.add(tenantAttributeName, tenant);
+            logger.trace("Added tenant attribute '{}' = '{}' for user '{}'", tenantAttributeName, tenant, username);
+        }
+        
+        // Add custom attributes
+        for (Map.Entry<String, String> entry : customAttributes.entrySet()) {
+            attributes.add(entry.getKey(), entry.getValue());
+            logger.trace("Added custom attribute '{}' = '{}' for user '{}'", entry.getKey(), entry.getValue(), username);
+        }
+        
         // Add any additional attributes from federated storage
         Map<String, List<String>> federatedAttributes = super.getAttributes();
         if (federatedAttributes != null) {
             attributes.putAll(federatedAttributes);
         }
         
+        logger.debug("Final attributes for user '{}': {} attributes including {} custom attributes", 
+                    username, attributes.size(), customAttributes.size());
+        
         return attributes;
+    }
+
+    /**
+     * Gets the tenant for this user
+     */
+    public String getTenant() {
+        return tenant;
+    }
+
+    /**
+     * Gets all custom attributes for this user
+     */
+    public Map<String, String> getCustomAttributes() {
+        return new HashMap<>(customAttributes);
     }
 }
