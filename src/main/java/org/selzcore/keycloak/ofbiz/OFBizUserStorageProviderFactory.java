@@ -31,6 +31,16 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public static final String CONFIG_KEY_ENABLED_REALMS = "enabledRealms";
     public static final String CONFIG_KEY_TENANT_ATTRIBUTE = "tenantAttribute";
     public static final String CONFIG_KEY_CUSTOM_ATTRIBUTES = "customAttributes";
+    public static final String CONFIG_KEY_INTEGRATION_MODE = "integrationMode";
+    public static final String CONFIG_KEY_OFBIZ_BASE_URL = "ofbizBaseUrl";
+    public static final String CONFIG_KEY_OFBIZ_AUTH_ENDPOINT = "ofbizAuthEndpoint";
+    public static final String CONFIG_KEY_OFBIZ_USER_ENDPOINT = "ofbizUserEndpoint";
+    public static final String CONFIG_KEY_OFBIZ_API_KEY = "ofbizApiKey";
+    public static final String CONFIG_KEY_OFBIZ_TIMEOUT = "ofbizTimeout";
+    
+    // Integration mode constants
+    public static final String INTEGRATION_MODE_DATABASE = "database";
+    public static final String INTEGRATION_MODE_REST = "rest";
 
     @Override
     public OFBizUserStorageProvider create(KeycloakSession session, ComponentModel model) {
@@ -95,46 +105,89 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public List<ProviderConfigProperty> getConfigProperties() {
         return ProviderConfigurationBuilder.create()
                 .property()
+                    .name(CONFIG_KEY_INTEGRATION_MODE)
+                    .label("Integration Mode")
+                    .helpText("Choose between direct database access or OFBiz REST API integration")
+                    .type(ProviderConfigProperty.LIST_TYPE)
+                    .defaultValue(INTEGRATION_MODE_DATABASE)
+                    .options(INTEGRATION_MODE_DATABASE, INTEGRATION_MODE_REST)
+                    .add()
+                .property()
                     .name(CONFIG_KEY_JDBC_DRIVER)
                     .label("JDBC Driver Class")
-                    .helpText("JDBC driver class name (e.g., com.mysql.cj.jdbc.Driver, org.postgresql.Driver)")
+                    .helpText("JDBC driver class name (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("com.mysql.cj.jdbc.Driver")
                     .add()
                 .property()
                     .name(CONFIG_KEY_JDBC_URL)
                     .label("JDBC URL")
-                    .helpText("JDBC connection URL to OFBiz database")
+                    .helpText("JDBC connection URL to OFBiz database (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("jdbc:mysql://localhost:3306/ofbiz")
                     .add()
                 .property()
                     .name(CONFIG_KEY_DB_USERNAME)
                     .label("Database Username")
-                    .helpText("Database username for OFBiz database")
+                    .helpText("Database username for OFBiz database (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("ofbiz")
                     .add()
                 .property()
                     .name(CONFIG_KEY_DB_PASSWORD)
                     .label("Database Password")
-                    .helpText("Database password for OFBiz database")
+                    .helpText("Database password for OFBiz database (required for database mode)")
                     .type(ProviderConfigProperty.PASSWORD)
                     .secret(true)
                     .add()
                 .property()
                     .name(CONFIG_KEY_VALIDATION_QUERY)
                     .label("Validation Query")
-                    .helpText("SQL query to validate database connections")
+                    .helpText("SQL query to validate database connections (database mode only)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("SELECT 1")
                     .add()
                 .property()
                     .name(CONFIG_KEY_POOL_SIZE)
                     .label("Connection Pool Size")
-                    .helpText("Maximum number of database connections in the pool")
+                    .helpText("Maximum number of database connections in the pool (database mode only)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("10")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_BASE_URL)
+                    .label("OFBiz Base URL")
+                    .helpText("Base URL of OFBiz instance (required for REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("http://localhost:8080")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_AUTH_ENDPOINT)
+                    .label("OFBiz Authentication Endpoint")
+                    .helpText("REST endpoint for user authentication (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/services/checkLogin")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_USER_ENDPOINT)
+                    .label("OFBiz User Info Endpoint")
+                    .helpText("REST endpoint for user information and tenant data (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/services/getUserInfo")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_API_KEY)
+                    .label("OFBiz API Key")
+                    .helpText("API key for OFBiz REST service authentication (optional)")
+                    .type(ProviderConfigProperty.PASSWORD)
+                    .secret(true)
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_TIMEOUT)
+                    .label("OFBiz Request Timeout")
+                    .helpText("Timeout for OFBiz REST API calls in milliseconds (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("5000")
                     .add()
                 .property()
                     .name(CONFIG_KEY_ENABLED_REALMS)
@@ -152,7 +205,7 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                 .property()
                     .name(CONFIG_KEY_CUSTOM_ATTRIBUTES)
                     .label("Custom Attribute Mappings")
-                    .helpText("Comma-separated list of OFBiz field mappings in format 'attributeName:ofbizField' (e.g., 'department:dept_id,location:location_code')")
+                    .helpText("Comma-separated list of attribute mappings in format 'attributeName:ofbizField' (e.g., 'department:dept_id,location:location_code')")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .add()
                 .build();
@@ -162,25 +215,48 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public void validateConfiguration(KeycloakSession session, RealmModel realm, ComponentModel config) 
             throws ComponentValidationException {
         
+        String integrationMode = config.get(CONFIG_KEY_INTEGRATION_MODE);
+        if (integrationMode == null || integrationMode.trim().isEmpty()) {
+            integrationMode = INTEGRATION_MODE_DATABASE; // default
+        }
+        
+        logger.debug("Validating OFBiz User Storage Provider configuration for mode: {}", integrationMode);
+        
+        if (INTEGRATION_MODE_DATABASE.equals(integrationMode)) {
+            validateDatabaseConfiguration(config);
+        } else if (INTEGRATION_MODE_REST.equals(integrationMode)) {
+            validateRestConfiguration(config);
+        } else {
+            throw new ComponentValidationException("Invalid integration mode: " + integrationMode + 
+                ". Must be '" + INTEGRATION_MODE_DATABASE + "' or '" + INTEGRATION_MODE_REST + "'");
+        }
+        
+        // Common validations
+        validateCommonConfiguration(config);
+        
+        logger.info("OFBiz User Storage Provider configuration validated successfully for mode: {}", integrationMode);
+    }
+    
+    private void validateDatabaseConfiguration(ComponentModel config) throws ComponentValidationException {
         String jdbcDriver = config.get(CONFIG_KEY_JDBC_DRIVER);
         String jdbcUrl = config.get(CONFIG_KEY_JDBC_URL);
         String username = config.get(CONFIG_KEY_DB_USERNAME);
         String password = config.get(CONFIG_KEY_DB_PASSWORD);
         
         if (jdbcDriver == null || jdbcDriver.trim().isEmpty()) {
-            throw new ComponentValidationException("JDBC Driver is required");
+            throw new ComponentValidationException("JDBC Driver is required for database mode");
         }
         
         if (jdbcUrl == null || jdbcUrl.trim().isEmpty()) {
-            throw new ComponentValidationException("JDBC URL is required");
+            throw new ComponentValidationException("JDBC URL is required for database mode");
         }
         
         if (username == null || username.trim().isEmpty()) {
-            throw new ComponentValidationException("Database Username is required");
+            throw new ComponentValidationException("Database Username is required for database mode");
         }
         
         if (password == null || password.trim().isEmpty()) {
-            throw new ComponentValidationException("Database Password is required");
+            throw new ComponentValidationException("Database Password is required for database mode");
         }
         
         // Validate JDBC driver class exists
@@ -202,7 +278,48 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                 throw new ComponentValidationException("Pool size must be a valid number");
             }
         }
+    }
+    
+    private void validateRestConfiguration(ComponentModel config) throws ComponentValidationException {
+        String baseUrl = config.get(CONFIG_KEY_OFBIZ_BASE_URL);
+        String authEndpoint = config.get(CONFIG_KEY_OFBIZ_AUTH_ENDPOINT);
+        String userEndpoint = config.get(CONFIG_KEY_OFBIZ_USER_ENDPOINT);
         
-        logger.info("OFBiz User Storage Provider configuration validated successfully");
+        if (baseUrl == null || baseUrl.trim().isEmpty()) {
+            throw new ComponentValidationException("OFBiz Base URL is required for REST mode");
+        }
+        
+        if (authEndpoint == null || authEndpoint.trim().isEmpty()) {
+            throw new ComponentValidationException("OFBiz Authentication Endpoint is required for REST mode");
+        }
+        
+        if (userEndpoint == null || userEndpoint.trim().isEmpty()) {
+            throw new ComponentValidationException("OFBiz User Info Endpoint is required for REST mode");
+        }
+        
+        // Validate URL format
+        try {
+            new java.net.URL(baseUrl);
+        } catch (java.net.MalformedURLException e) {
+            throw new ComponentValidationException("Invalid OFBiz Base URL format: " + baseUrl);
+        }
+        
+        // Validate timeout is a valid number
+        String timeoutStr = config.get(CONFIG_KEY_OFBIZ_TIMEOUT);
+        if (timeoutStr != null && !timeoutStr.trim().isEmpty()) {
+            try {
+                int timeout = Integer.parseInt(timeoutStr);
+                if (timeout <= 0) {
+                    throw new ComponentValidationException("OFBiz timeout must be a positive number");
+                }
+            } catch (NumberFormatException e) {
+                throw new ComponentValidationException("OFBiz timeout must be a valid number");
+            }
+        }
+    }
+    
+    private void validateCommonConfiguration(ComponentModel config) throws ComponentValidationException {
+        // No additional common validations needed at this time
+        // This method is reserved for future common validation logic
     }
 }

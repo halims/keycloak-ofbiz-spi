@@ -4,13 +4,24 @@ A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 wit
 
 ## Features
 
-- **User Authentication**: Authenticate users against OFBiz database
+- **Dual Integration Modes**: Choose between direct database connection or REST API integration
+- **User Authentication**: Authenticate users against OFBiz database or via REST API
 - **Password Verification**: Support for OFBiz password hashing schemes (SHA-1 with salt)
 - **User Lookup**: Find users by username, email, or ID
-- **User Search**: Search and list users with pagination
+- **User Search**: Search and list users with pagination (database mode only)
+- **Tenant Support**: Multi-tenant user attributes and custom data mapping
 - **Connection Pooling**: Efficient database connection management with HikariCP
 - **Multi-Database Support**: Works with MySQL, PostgreSQL, and other JDBC databases
+- **Comprehensive Logging**: Detailed authentication and operational logging
 - **Configurable**: Easy configuration through Keycloak admin console
+
+## Integration Modes
+
+### Database Mode (Default)
+Direct connection to OFBiz database for high performance and full feature support.
+
+### REST Mode
+Integration via OFBiz REST API endpoints for distributed deployments and enhanced security.
 
 ## Architecture
 
@@ -21,11 +32,15 @@ A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 wit
                                              │
                                     Keycloak SPI
                                              │
-                                             ▼
-                                    ┌─────────────────┐
-                                    │  OFBiz Database │
-                                    │   (User Store)  │
-                                    └─────────────────┘
+                                    ┌────────┴─────────┐
+                                    │                  │
+                              Database Mode      REST Mode
+                                    │                  │
+                                    ▼                  ▼
+                           ┌─────────────────┐ ┌─────────────────┐
+                           │  OFBiz Database │ │ OFBiz REST API  │
+                           │   (User Store)  │ │   (Web Service) │
+                           └─────────────────┘ └─────────────────┘
 ```
 
 ## Prerequisites
@@ -42,7 +57,7 @@ A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 wit
 mvn clean package
 ```
 
-This will create `target/keycloak-ofbiz-spi-1.0.0-SNAPSHOT.jar`
+This will create `target/keycloak-ofbiz-spi-0.0.4.jar`
 
 ## Installation
 
@@ -50,7 +65,7 @@ This will create `target/keycloak-ofbiz-spi-1.0.0-SNAPSHOT.jar`
 
 2. **Deploy to Keycloak**: Copy the JAR file to your Keycloak providers directory:
    ```bash
-   cp target/keycloak-ofbiz-spi-1.0.0-SNAPSHOT.jar $KEYCLOAK_HOME/providers/
+   cp target/keycloak-ofbiz-spi-0.0.4.jar $KEYCLOAK_HOME/providers/
    ```
 
 3. **Restart Keycloak**: Restart your Keycloak server to load the new provider.
@@ -62,6 +77,42 @@ This will create `target/keycloak-ofbiz-spi-1.0.0-SNAPSHOT.jar`
    - Click "Add provider" and select "ofbiz-user-storage"
 
 ## Configuration
+
+The OFBiz User Storage Provider supports two integration modes:
+
+### Database Mode (Recommended for performance)
+Direct connection to the OFBiz database using JDBC.
+
+### REST Mode (Recommended for security/distributed deployments)  
+Integration via OFBiz REST API endpoints.
+
+For detailed configuration instructions for both modes, see:
+- **[Integration Modes Guide](readme/INTEGRATION_MODES_GUIDE.md)** - Complete guide for both integration modes
+- **[Configuration Guide](readme/CONFIGURATION_GUIDE.md)** - Basic configuration instructions
+- **[Runtime Realm Configuration](readme/RUNTIME_REALM_CONFIGURATION.md)** - Advanced realm-specific settings
+
+### Quick Start Configuration
+
+#### Database Mode
+```
+Integration Mode: database
+Database URL: jdbc:postgresql://localhost:5432/ofbiz
+Database Username: ofbiz
+Database Password: ofbiz123
+Connection Pool Size: 5
+Enabled Realms: mycompany
+```
+
+#### REST Mode
+```
+Integration Mode: rest
+OFBiz Base URL: https://ofbiz.mycompany.com
+Auth Endpoint: /rest/auth/login
+User Endpoint: /rest/user/info
+API Key: your-api-key-here
+Timeout: 5000
+Enabled Realms: mycompany
+```
 
 Configure the following properties in Keycloak Admin Console:
 

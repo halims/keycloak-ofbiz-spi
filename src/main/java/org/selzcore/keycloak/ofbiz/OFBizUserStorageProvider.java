@@ -36,12 +36,25 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     
     private final KeycloakSession session;
     private final ComponentModel model;
+    private final String integrationMode;
     private final OFBizConnectionProvider connectionProvider;
+    private final OFBizRestClient restClient;
 
     public OFBizUserStorageProvider(KeycloakSession session, ComponentModel model) {
         this.session = session;
         this.model = model;
-        this.connectionProvider = new OFBizConnectionProvider(model);
+        this.integrationMode = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_INTEGRATION_MODE);
+        
+        // Initialize providers based on integration mode
+        if ("rest".equals(integrationMode)) {
+            this.connectionProvider = null;
+            this.restClient = new OFBizRestClient(model);
+            logger.info("Initialized OFBiz User Storage Provider in REST mode for realm configuration");
+        } else {
+            this.connectionProvider = new OFBizConnectionProvider(model);
+            this.restClient = null;
+            logger.info("Initialized OFBiz User Storage Provider in DATABASE mode for realm configuration");
+        }
     }
 
     /**
@@ -75,6 +88,9 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         if (connectionProvider != null) {
             connectionProvider.close();
         }
+        if (restClient != null) {
+            restClient.close();
+        }
     }
 
     @Override
@@ -86,7 +102,8 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public UserModel getUserByUsername(RealmModel realm, String username) {
-        logger.debug("Looking up user '{}' in realm '{}'", username, realm.getName());
+        logger.debug("Looking up user '{}' in realm '{}' using {} mode", 
+                    username, realm.getName(), integrationMode.toUpperCase());
         
         // Check if this provider should be active for this realm
         if (!isActiveForRealm(realm)) {
@@ -94,6 +111,50 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         realm.getName(), username);
             return null;
         }
+        
+        if ("rest".equals(integrationMode)) {
+            return getUserByUsernameViaRest(realm, username);
+        } else {
+            return getUserByUsernameViaDatabase(realm, username);
+        }
+    }
+
+    /**
+     * Get user via REST API
+     */
+    private UserModel getUserByUsernameViaRest(RealmModel realm, String username) {
+        logger.debug("Getting user '{}' via REST API", username);
+        
+        try {
+            OFBizRestClient.OFBizUserInfo userInfo = restClient.getUserInfo(username);
+            
+            if (userInfo != null && userInfo.isEnabled()) {
+                logger.info("✅ REST USER FOUND: User '{}' found via REST API (tenant: '{}')", 
+                           username, userInfo.getTenant());
+                
+                return new OFBizUserAdapter(session, realm, model, 
+                    userInfo.getUsername(),
+                    userInfo.getFirstName(),
+                    userInfo.getLastName(), 
+                    userInfo.getEmail(),
+                    userInfo.isEnabled(),
+                    userInfo.getTenant(),
+                    userInfo.getCustomAttributes());
+            } else {
+                logger.info("❌ REST USER NOT FOUND: User '{}' not found or disabled via REST API", username);
+                return null;
+            }
+        } catch (Exception e) {
+            logger.error("Error getting user '{}' via REST API: {}", username, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Get user via database connection
+     */
+    private UserModel getUserByUsernameViaDatabase(RealmModel realm, String username) {
+        logger.debug("Getting user '{}' via database", username);
         
         try (Connection connection = connectionProvider.getConnection()) {
             // Enhanced SQL to include tenant and custom attributes
@@ -144,7 +205,8 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public UserModel getUserByEmail(RealmModel realm, String email) {
-        logger.debug("Looking up user by email '{}' in realm '{}'", email, realm.getName());
+        logger.debug("Looking up user by email '{}' in realm '{}' using {} mode", 
+                    email, realm.getName(), integrationMode.toUpperCase());
         
         // Check if this provider should be active for this realm
         if (!isActiveForRealm(realm)) {
@@ -152,6 +214,50 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         realm.getName(), email);
             return null;
         }
+        
+        if ("rest".equals(integrationMode)) {
+            return getUserByEmailViaRest(realm, email);
+        } else {
+            return getUserByEmailViaDatabase(realm, email);
+        }
+    }
+
+    /**
+     * Get user by email via REST API
+     */
+    private UserModel getUserByEmailViaRest(RealmModel realm, String email) {
+        logger.debug("Getting user by email '{}' via REST API", email);
+        
+        try {
+            OFBizRestClient.OFBizUserInfo userInfo = restClient.getUserInfoByEmail(email);
+            
+            if (userInfo != null && userInfo.isEnabled()) {
+                logger.info("✅ REST USER FOUND BY EMAIL: User found by email '{}' -> username '{}' via REST API (tenant: '{}')", 
+                           email, userInfo.getUsername(), userInfo.getTenant());
+                
+                return new OFBizUserAdapter(session, realm, model, 
+                    userInfo.getUsername(),
+                    userInfo.getFirstName(),
+                    userInfo.getLastName(), 
+                    userInfo.getEmail(),
+                    userInfo.isEnabled(),
+                    userInfo.getTenant(),
+                    userInfo.getCustomAttributes());
+            } else {
+                logger.info("❌ REST USER NOT FOUND BY EMAIL: User not found or disabled by email '{}' via REST API", email);
+                return null;
+            }
+        } catch (Exception e) {
+            logger.error("Error getting user by email '{}' via REST API: {}", email, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Get user by email via database connection
+     */
+    private UserModel getUserByEmailViaDatabase(RealmModel realm, String email) {
+        logger.debug("Getting user by email '{}' via database", email);
         
         try (Connection connection = connectionProvider.getConnection()) {
             // Enhanced SQL to include tenant and custom attributes
@@ -202,7 +308,13 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public int getUsersCount(RealmModel realm) {
-        logger.debug("Getting users count for realm: {}", realm.getName());
+        logger.debug("Getting users count for realm: {} using {} mode", realm.getName(), integrationMode.toUpperCase());
+        
+        if ("rest".equals(integrationMode)) {
+            // REST mode doesn't typically support user counts for security reasons
+            logger.debug("User count not supported in REST mode, returning 0");
+            return 0;
+        }
         
         try (Connection connection = connectionProvider.getConnection()) {
             String sql = "SELECT COUNT(*) FROM user_login WHERE enabled = 'Y'";
@@ -224,11 +336,18 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     @Override
     public Stream<UserModel> searchForUserStream(RealmModel realm, Map<String, String> params, 
             Integer firstResult, Integer maxResults) {
-        logger.debug("Searching for users with params: {} in realm: {}", params, realm.getName());
+        logger.debug("Searching for users with params: {} in realm: {} using {} mode", 
+                    params, realm.getName(), integrationMode.toUpperCase());
         
         // Check if this provider should be active for this realm
         if (!isActiveForRealm(realm)) {
             logger.debug("OFBiz provider not active for realm: {}, returning empty search results", realm.getName());
+            return Stream.empty();
+        }
+        
+        if ("rest".equals(integrationMode)) {
+            // REST mode doesn't typically support user search for security reasons
+            logger.debug("User search not supported in REST mode, returning empty stream");
             return Stream.empty();
         }
         
@@ -342,18 +461,47 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         boolean isValid = validatePassword(username, password);
         
         if (isValid) {
-            logger.info("✅ LOGIN SUCCESS: User '{}' successfully authenticated in realm '{}'", username, realm.getName());
+            logger.info("✅ LOGIN SUCCESS: User '{}' successfully authenticated in realm '{}' using {} mode", 
+                       username, realm.getName(), integrationMode.toUpperCase());
         } else {
-            logger.warn("❌ LOGIN FAILED: Invalid credentials for user '{}' in realm '{}'", username, realm.getName());
+            logger.warn("❌ LOGIN FAILED: Invalid credentials for user '{}' in realm '{}' using {} mode", 
+                       username, realm.getName(), integrationMode.toUpperCase());
         }
         
         return isValid;
     }
 
     /**
-     * Validates user password against OFBiz database
+     * Validates user password using the configured integration mode
      */
     private boolean validatePassword(String username, String password) {
+        if ("rest".equals(integrationMode)) {
+            return validatePasswordViaRest(username, password);
+        } else {
+            return validatePasswordViaDatabase(username, password);
+        }
+    }
+
+    /**
+     * Validates user password via REST API
+     */
+    private boolean validatePasswordViaRest(String username, String password) {
+        logger.trace("Validating password for user '{}' via REST API", username);
+        
+        try {
+            boolean isValid = restClient.authenticateUser(username, password);
+            logger.trace("REST API password validation result for user '{}': {}", username, isValid);
+            return isValid;
+        } catch (Exception e) {
+            logger.error("Error validating password for user '{}' via REST API: {}", username, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Validates user password against OFBiz database
+     */
+    private boolean validatePasswordViaDatabase(String username, String password) {
         logger.trace("Validating password for user '{}' against OFBiz database", username);
         
         try (Connection connection = connectionProvider.getConnection()) {
