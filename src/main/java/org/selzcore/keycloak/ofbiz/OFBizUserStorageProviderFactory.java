@@ -35,7 +35,6 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public static final String CONFIG_KEY_OFBIZ_BASE_URL = "ofbizBaseUrl";
     public static final String CONFIG_KEY_OFBIZ_AUTH_ENDPOINT = "ofbizAuthEndpoint";
     public static final String CONFIG_KEY_OFBIZ_USER_ENDPOINT = "ofbizUserEndpoint";
-    public static final String CONFIG_KEY_OFBIZ_API_KEY = "ofbizApiKey";
     public static final String CONFIG_KEY_OFBIZ_TIMEOUT = "ofbizTimeout";
     
     // Integration mode constants
@@ -51,44 +50,64 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
         RealmModel realm = session.realms().getRealm(model.getParentId());
         if (realm == null) {
             logger.warn("❌ Cannot create OFBiz provider: realm not found for ID: {}", model.getParentId());
-            return null;
+            // Never return null - create a disabled provider instead
+            return new OFBizUserStorageProvider(session, model);
         }
         
         logger.debug("Provider requested for realm: '{}' (ID: {})", realm.getName(), realm.getId());
         
-        // CRITICAL: Never create provider for master realm unless explicitly configured
-        if ("master".equals(realm.getName())) {
-            String enabledRealms = model.get(CONFIG_KEY_ENABLED_REALMS);
-            if (enabledRealms == null || !enabledRealms.contains("master")) {
-                logger.warn("🚫 SECURITY: Refusing to create OFBiz User Storage Provider for master realm. " +
-                           "This is a security protection. Configure 'enabledRealms' property to explicitly enable.");
-                return null; // Don't create provider for master realm
-            } else {
-                logger.warn("⚠️  WARNING: OFBiz provider explicitly enabled for master realm - ensure this is intentional!");
-            }
+        // Check if provider should be enabled for this realm
+        boolean shouldEnable = shouldEnableForRealm(realm, model);
+        
+        if (!shouldEnable) {
+            logger.debug("OFBiz provider disabled for realm: '{}'", realm.getName());
+        } else {
+            logger.info("✅ Creating OFBiz User Storage Provider for realm: '{}' (model: {})", 
+                       realm.getName(), model.getName());
         }
         
-        // Additional check: if enabledRealms is specified, ensure current realm is in the list
-        String enabledRealms = model.get(CONFIG_KEY_ENABLED_REALMS);
-        if (enabledRealms != null && !enabledRealms.trim().isEmpty()) {
-            String[] realms = enabledRealms.split(",");
-            boolean isEnabled = false;
-            for (String enabledRealm : realms) {
-                if (enabledRealm.trim().equals(realm.getName())) {
-                    isEnabled = true;
-                    break;
+        // Always return a provider instance, but it may be inactive for certain realms
+        return new OFBizUserStorageProvider(session, model);
+    }
+
+    /**
+     * Determines if the provider should be enabled for the given realm
+     */
+    private boolean shouldEnableForRealm(RealmModel realm, ComponentModel model) {
+        try {
+            String enabledRealms = model.get(CONFIG_KEY_ENABLED_REALMS);
+
+            // CRITICAL: Never enable for master realm unless explicitly configured
+            if ("master".equals(realm.getName())) {
+                if (enabledRealms == null || !enabledRealms.contains("master")) {
+                    logger.debug("OFBiz provider not enabled for master realm (security protection)");
+                    return false;
+                } else {
+                    logger.warn("⚠️  WARNING: OFBiz provider explicitly enabled for master realm - ensure this is intentional!");
+                    return true;
                 }
             }
-            if (!isEnabled) {
-                logger.debug("❌ OFBiz provider not enabled for realm: '{}', configured realms: {}", 
-                           realm.getName(), enabledRealms);
-                return null; // Don't create provider for non-enabled realms
+            
+            // Check if enabledRealms is specified and current realm is in the list
+            if (enabledRealms != null && !enabledRealms.trim().isEmpty()) {
+                String[] realms = enabledRealms.split(",");
+                for (String enabledRealm : realms) {
+                    if (enabledRealm.trim().equals(realm.getName())) {
+                        return true;
+                    }
+                }
+                logger.debug("OFBiz provider not enabled for realm: '{}'", realm.getName());
+                return false;
             }
+            
+            // If no specific realms are configured, enable for all non-master realms
+            return true;
+            
+        } catch (Exception e) {
+            logger.warn("Error checking realm configuration for realm '{}': {}", realm.getName(), e.getMessage());
+            // Default to disabled, do not try to enable for realms with errors
+            return false;
         }
-        
-        logger.info("✅ Creating OFBiz User Storage Provider for realm: '{}' (model: {})", 
-                   realm.getName(), model.getName());
-        return new OFBizUserStorageProvider(session, model);
     }
 
     @Override
@@ -105,33 +124,68 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public List<ProviderConfigProperty> getConfigProperties() {
         return ProviderConfigurationBuilder.create()
                 .property()
+                    .name(CONFIG_KEY_ENABLED_REALMS)
+                    .label("Enabled Realms")
+                    .helpText("Comma-separated list of realm names where this provider should be active (optional, leave empty to allow all)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("ofbiz")
+                    .add()
+                .property()
                     .name(CONFIG_KEY_INTEGRATION_MODE)
                     .label("Integration Mode")
                     .helpText("Choose between direct database access or OFBiz REST API integration")
                     .type(ProviderConfigProperty.LIST_TYPE)
-                    .defaultValue(INTEGRATION_MODE_DATABASE)
+                    .defaultValue(INTEGRATION_MODE_REST)
                     .options(INTEGRATION_MODE_DATABASE, INTEGRATION_MODE_REST)
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_BASE_URL)
+                    .label("OFBiz Base URL")
+                    .helpText("Base URL of OFBiz instance (mandatory for REST mode), make sure SSL is valid")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("http://ofbiz.local:8080")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_AUTH_ENDPOINT)
+                    .label("OFBiz Authentication Endpoint")
+                    .helpText("REST endpoint for user authentication (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/auth/token")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_USER_ENDPOINT)
+                    .label("OFBiz User Info Endpoint")
+                    .helpText("REST endpoint for user information and tenant data (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/services/findUserLogin")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_TIMEOUT)
+                    .label("OFBiz Request Timeout")
+                    .helpText("Timeout for OFBiz REST API calls in milliseconds (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("5000")
                     .add()
                 .property()
                     .name(CONFIG_KEY_JDBC_DRIVER)
                     .label("JDBC Driver Class")
                     .helpText("JDBC driver class name (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("com.mysql.cj.jdbc.Driver")
+                    .defaultValue("org.postgresql.Driver")
                     .add()
                 .property()
                     .name(CONFIG_KEY_JDBC_URL)
                     .label("JDBC URL")
                     .helpText("JDBC connection URL to OFBiz database (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("jdbc:mysql://localhost:3306/ofbiz")
+                    .defaultValue("jdbc:postgresql://localhost:5432/ofbiz")
                     .add()
                 .property()
                     .name(CONFIG_KEY_DB_USERNAME)
                     .label("Database Username")
                     .helpText("Database username for OFBiz database (required for database mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("ofbiz")
+                    .defaultValue("keycloak")
                     .add()
                 .property()
                     .name(CONFIG_KEY_DB_PASSWORD)
@@ -152,48 +206,7 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                     .label("Connection Pool Size")
                     .helpText("Maximum number of database connections in the pool (database mode only)")
                     .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("10")
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_OFBIZ_BASE_URL)
-                    .label("OFBiz Base URL")
-                    .helpText("Base URL of OFBiz instance (required for REST mode)")
-                    .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("http://localhost:8080")
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_OFBIZ_AUTH_ENDPOINT)
-                    .label("OFBiz Authentication Endpoint")
-                    .helpText("REST endpoint for user authentication (REST mode)")
-                    .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("/rest/services/checkLogin")
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_OFBIZ_USER_ENDPOINT)
-                    .label("OFBiz User Info Endpoint")
-                    .helpText("REST endpoint for user information and tenant data (REST mode)")
-                    .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("/rest/services/getUserInfo")
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_OFBIZ_API_KEY)
-                    .label("OFBiz API Key")
-                    .helpText("API key for OFBiz REST service authentication (optional)")
-                    .type(ProviderConfigProperty.PASSWORD)
-                    .secret(true)
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_OFBIZ_TIMEOUT)
-                    .label("OFBiz Request Timeout")
-                    .helpText("Timeout for OFBiz REST API calls in milliseconds (REST mode)")
-                    .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("5000")
-                    .add()
-                .property()
-                    .name(CONFIG_KEY_ENABLED_REALMS)
-                    .label("Enabled Realms")
-                    .helpText("Comma-separated list of realm names where this provider should be active (optional, leave empty to allow all)")
-                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("8")
                     .add()
                 .property()
                     .name(CONFIG_KEY_TENANT_ATTRIBUTE)

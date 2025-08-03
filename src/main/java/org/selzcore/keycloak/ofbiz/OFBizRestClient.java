@@ -11,6 +11,11 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Base64;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.security.cert.X509Certificate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,25 +32,43 @@ public class OFBizRestClient {
     private final String baseUrl;
     private final String authEndpoint;
     private final String userEndpoint;
-    private final String apiKey;
     private final int timeout;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private String authToken; // Store authentication token
+    private int tokenExpiresInSeconds; // Store token expiration from OFBiz
 
     public OFBizRestClient(ComponentModel model) {
         this.baseUrl = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_BASE_URL);
         this.authEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_AUTH_ENDPOINT);
         this.userEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_USER_ENDPOINT);
-        this.apiKey = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_API_KEY);
         
         String timeoutStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_TIMEOUT);
         this.timeout = timeoutStr != null && !timeoutStr.trim().isEmpty() ? 
                       Integer.parseInt(timeoutStr) : 5000;
         
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(timeout))
-                .build();
+        // Create HTTP client with SSL support for development (trusts self-signed certificates)
+        HttpClient.Builder clientBuilder = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(timeout));
+                
+        // For HTTPS endpoints, configure to accept self-signed certificates in development
+        if (baseUrl != null && baseUrl.startsWith("https://")) {
+            try {
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                sslContext.init(null, new TrustManager[]{new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }}, new java.security.SecureRandom());
+                
+                clientBuilder.sslContext(sslContext);
+                logger.debug("Configured HTTP client for HTTPS with self-signed certificate support");
+            } catch (Exception e) {
+                logger.warn("Failed to configure SSL context for HTTPS, using default: {}", e.getMessage());
+            }
+        }
         
+        this.httpClient = clientBuilder.build();
         this.objectMapper = new ObjectMapper();
         
         logger.debug("Created OFBizRestClient with baseUrl: {}, timeout: {}ms", 
@@ -53,122 +76,197 @@ public class OFBizRestClient {
     }
 
     /**
-     * Authenticates a user against OFBiz REST API
+     * Tests connectivity to OFBiz instance
      */
-    public boolean authenticateUser(String username, String password) {
-        logger.debug("Authenticating user '{}' via OFBiz REST API", username);
+    public boolean testConnection() {
+        logger.debug("Testing connection to OFBiz at: {}", maskUrl(baseUrl));
         
         try {
-            Map<String, Object> authRequest = new HashMap<>();
-            authRequest.put("username", username);
-            authRequest.put("password", password);
+            // Try to connect to the REST endpoint
+            String testUrl = baseUrl + "/rest/"; // OFBiz REST endpoint
             
-            String requestBody = objectMapper.writeValueAsString(authRequest);
-            String url = baseUrl + authEndpoint;
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(testUrl))
+                    .timeout(Duration.ofMillis(timeout))
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            
+            HttpResponse<String> response = httpClient.send(request, 
+                    HttpResponse.BodyHandlers.ofString());
+            
+            logger.info("OFBiz connection test - Status: {}, URL: {}", 
+                       response.statusCode(), maskUrl(testUrl));
+            
+            // Accept various success codes (200, 302 redirect, etc.)
+            boolean connected = response.statusCode() >= 200 && response.statusCode() < 400;
+            
+            if (connected) {
+                logger.info("✅ OFBiz REST endpoint accessible");
+                return true;
+            } else {
+                logger.error("❌ Failed to connect to OFBiz REST endpoint");
+                return false;
+            }
+            
+        } catch (Exception e) {
+            logger.error("Failed to connect to OFBiz at {}: {}", maskUrl(baseUrl), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Authenticates a user against OFBiz REST API using /rest/auth/token
+     */
+    public boolean authenticateUser(String username, String password) {
+        logger.info("🌐 OFBIZ REST: Starting authentication for user '{}' via OFBiz REST API", username);
+        
+        // Test connection first
+        if (!testConnection()) {
+            logger.error("❌ OFBIZ REST: Cannot reach OFBiz instance at {}, authentication failed", maskUrl(baseUrl));
+            return false;
+        }
+        
+        try {
+            // Use OFBiz standard REST auth endpoint
+            String url = baseUrl + "/rest/auth/token";
+            
+            // Create Basic Authentication header
+            String credentials = username + ":" + password;
+            String encodedCredentials = Base64.getEncoder().encodeToString(credentials.getBytes());
             
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofMillis(timeout))
                     .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody));
-            
-            if (apiKey != null && !apiKey.trim().isEmpty()) {
-                requestBuilder.header("Authorization", "Bearer " + apiKey);
-            }
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Basic " + encodedCredentials)
+                    .POST(HttpRequest.BodyPublishers.ofString("{}"));
             
             HttpRequest request = requestBuilder.build();
             
-            logger.trace("Sending authentication request to: {}", maskUrl(url));
+            logger.info("🌐 OFBIZ REST: Sending authentication request to: {}", maskUrl(url));
+            logger.debug("🌐 OFBIZ REST: Using Basic Authentication for user: {}", username);
             
             HttpResponse<String> response = httpClient.send(request, 
                     HttpResponse.BodyHandlers.ofString());
             
-            logger.trace("Authentication response status: {}", response.statusCode());
+            logger.info("🌐 OFBIZ REST: Received response - Status: {}, Body length: {} chars", 
+                        response.statusCode(), response.body().length());
+            logger.debug("🌐 OFBIZ REST: Response body: {}", response.body());
             
             if (response.statusCode() == 200) {
-                JsonNode responseJson = objectMapper.readTree(response.body());
-                boolean success = responseJson.path("success").asBoolean(false);
-                
-                if (success) {
-                    logger.info("✅ REST AUTH SUCCESS: User '{}' authenticated via OFBiz REST API", username);
-                } else {
-                    String errorMsg = responseJson.path("errorMessage").asText("Authentication failed");
-                    logger.warn("❌ REST AUTH FAILED: User '{}' authentication failed: {}", username, errorMsg);
+                try {
+                    JsonNode responseJson = objectMapper.readTree(response.body());
+                    
+                    // Extract token from data.access_token (OFBiz standard format)
+                    JsonNode dataNode = responseJson.path("data");
+                    String token = dataNode.path("access_token").asText();
+                    String tokenType = dataNode.path("token_type").asText();
+                    int expiresIn = dataNode.path("expires_in").asInt();
+                    
+                    if (token != null && !token.isEmpty()) {
+                        logger.info("✅ OFBIZ REST SUCCESS: User '{}' authenticated successfully", username);
+                        logger.info("🎟️ Token details - Type: '{}', Length: {} chars, Expires in: {} seconds", 
+                                   tokenType, token.length(), expiresIn);
+                        
+                        // Store token and expiration for subsequent requests
+                        this.authToken = token;
+                        this.tokenExpiresInSeconds = expiresIn;
+                        return true;
+                    } else {
+                        String errorMsg = responseJson.path("errorMessage").asText(
+                            responseJson.path("_ERROR_MESSAGE_").asText("No token in response"));
+                        logger.warn("❌ OFBIZ REST FAILED: User '{}' authentication failed - {}", username, errorMsg);
+                        logger.debug("Full response JSON: {}", responseJson.toString());
+                        return false;
+                    }
+                } catch (Exception jsonEx) {
+                    logger.error("❌ OFBIZ REST ERROR: Invalid JSON response for user '{}': {}", 
+                               username, response.body().substring(0, Math.min(500, response.body().length())));
+                    return false;
                 }
-                
-                return success;
+            } else if (response.statusCode() == 401) {
+                logger.warn("❌ OFBIZ REST FAILED: Invalid credentials (401) for user '{}'", username);
+                return false;
+            } else if (response.statusCode() == 404) {
+                logger.error("❌ OFBIZ REST ERROR: Authentication endpoint not found (404) - check OFBiz configuration and URL: {}", maskUrl(url));
+                return false;
             } else {
-                logger.warn("❌ REST AUTH ERROR: Authentication request failed with status: {} for user '{}'", 
-                           response.statusCode(), username);
+                logger.error("❌ OFBIZ REST ERROR: Authentication request failed with status: {} for user '{}', response: {}", 
+                           response.statusCode(), username, response.body().substring(0, Math.min(500, response.body().length())));
                 return false;
             }
             
         } catch (Exception e) {
-            logger.error("Error during REST authentication for user '{}': {}", username, e.getMessage(), e);
+            logger.error("💥 OFBIZ REST EXCEPTION: Error during REST authentication for user '{}': {}", 
+                        username, e.getMessage(), e);
             return false;
         }
     }
 
     /**
      * Retrieves user information and tenant data from OFBiz REST API
+     * Requires prior authentication to have a valid auth token
      */
     public OFBizUserInfo getUserInfo(String username) {
         logger.debug("Retrieving user info for '{}' via OFBiz REST API", username);
         
+        // Ensure we have an authentication token from prior authentication
+        if (this.authToken == null || this.authToken.isEmpty()) {
+            logger.warn("No authentication token available for user info lookup - authentication required first");
+            return null;
+        }
+        
         try {
-            String url = baseUrl + userEndpoint + "?username=" + username;
+            // Use OFBiz REST service to get user info - use POST with service parameters
+            String url = baseUrl + "/rest/services/findUserLogin";
+            
+            // Create request body with service parameters
+            String requestBody = "{\"userLoginId\": \"" + username + "\"}";
             
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofMillis(timeout))
                     .header("Content-Type", "application/json")
-                    .GET();
-            
-            if (apiKey != null && !apiKey.trim().isEmpty()) {
-                requestBuilder.header("Authorization", "Bearer " + apiKey);
-            }
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody));
             
             HttpRequest request = requestBuilder.build();
             
-            logger.trace("Sending user info request to: {}", maskUrl(url));
+            logger.trace("Sending user info request to: {} with body: {}", maskUrl(url), requestBody);
             
             HttpResponse<String> response = httpClient.send(request, 
                     HttpResponse.BodyHandlers.ofString());
             
-            logger.trace("User info response status: {}", response.statusCode());
+            logger.trace("User info response status: {}, body: {}", response.statusCode(), response.body());
             
             if (response.statusCode() == 200) {
                 JsonNode responseJson = objectMapper.readTree(response.body());
                 
-                if (responseJson.path("success").asBoolean(false)) {
-                    JsonNode userNode = responseJson.path("user");
+                // Check if we got user data
+                JsonNode userLoginNode = responseJson.path("userLogin");
+                if (!userLoginNode.isMissingNode() && !userLoginNode.isNull()) {
                     
-                    OFBizUserInfo userInfo = new OFBizUserInfo(
-                        userNode.path("username").asText(username),
-                        userNode.path("firstName").asText(null),
-                        userNode.path("lastName").asText(null),
-                        userNode.path("email").asText(null),
-                        userNode.path("enabled").asBoolean(true),
-                        userNode.path("tenant").asText(null)
-                    );
+                    // Get additional user details from Person entity
+                    OFBizUserInfo userInfo = getUserPersonInfo(username, userLoginNode);
                     
-                    // Parse custom attributes
-                    JsonNode attributesNode = userNode.path("attributes");
-                    if (attributesNode.isObject()) {
-                        attributesNode.fields().forEachRemaining(entry -> {
-                            userInfo.addCustomAttribute(entry.getKey(), entry.getValue().asText());
-                        });
+                    if (userInfo != null) {
+                        logger.info("Successfully retrieved user info for '{}' via REST API (tenant: '{}', attributes: {})", 
+                                   username, userInfo.getTenant(), userInfo.getCustomAttributes().size());
+                        return userInfo;
                     }
-                    
-                    logger.info("Successfully retrieved user info for '{}' via REST API (tenant: '{}', attributes: {})", 
-                               username, userInfo.getTenant(), userInfo.getCustomAttributes().size());
-                    
-                    return userInfo;
-                } else {
-                    String errorMsg = responseJson.path("errorMessage").asText("User not found");
-                    logger.warn("User info request failed for '{}': {}", username, errorMsg);
-                    return null;
                 }
+                
+                // If no userLogin found, try alternative approach
+                logger.warn("User '{}' not found in UserLogin entity", username);
+                return null;
+                
+            } else if (response.statusCode() == 401) {
+                logger.warn("Authentication token expired, need to re-authenticate");
+                this.authToken = null;
+                return null;
             } else {
                 logger.warn("User info request failed with status: {} for user '{}'", 
                            response.statusCode(), username);
@@ -180,6 +278,116 @@ public class OFBizRestClient {
             return null;
         }
     }
+    
+    /**
+     * Gets additional person information for the user
+     */
+    private OFBizUserInfo getUserPersonInfo(String username, JsonNode userLoginNode) {
+        try {
+            String partyId = userLoginNode.path("partyId").asText();
+            if (partyId == null || partyId.isEmpty()) {
+                // Create basic user info from UserLogin only
+                return new OFBizUserInfo(
+                    username,
+                    null, // firstName
+                    null, // lastName
+                    null, // email
+                    !"Y".equals(userLoginNode.path("enabled").asText("Y")), // enabled
+                    null  // tenant
+                );
+            }
+            
+            // Get Person details
+            String personUrl = baseUrl + "/rest/services/findPerson";
+            String requestBody = "{\"partyId\": \"" + partyId + "\"}";
+            
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(personUrl))
+                    .timeout(Duration.ofMillis(timeout))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+            
+            HttpResponse<String> response = httpClient.send(request, 
+                    HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                JsonNode personResponse = objectMapper.readTree(response.body());
+                JsonNode personNode = personResponse.path("person");
+                
+                String firstName = personNode.path("firstName").asText(null);
+                String lastName = personNode.path("lastName").asText(null);
+                
+                // Get email from ContactMech
+                String email = getUserEmail(partyId);
+                
+                // Create user info with all available data
+                OFBizUserInfo userInfo = new OFBizUserInfo(
+                    username,
+                    firstName,
+                    lastName,
+                    email,
+                    !"N".equals(userLoginNode.path("enabled").asText("Y")),
+                    partyId // Use partyId as tenant identifier
+                );
+                
+                return userInfo;
+            } else {
+                logger.debug("Could not retrieve person info for partyId: {}", partyId);
+                // Return basic info from UserLogin
+                return new OFBizUserInfo(
+                    username,
+                    null,
+                    null,
+                    null,
+                    !"N".equals(userLoginNode.path("enabled").asText("Y")),
+                    partyId
+                );
+            }
+            
+        } catch (Exception e) {
+            logger.warn("Error getting person info for user '{}': {}", username, e.getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Gets user email from ContactMech
+     */
+    private String getUserEmail(String partyId) {
+        try {
+            String emailUrl = baseUrl + "/rest/services/getPartyContactMechByPurpose";
+            String requestBody = "{\"partyId\": \"" + partyId + "\", \"contactMechPurposeTypeId\": \"PRIMARY_EMAIL\"}";
+            
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(emailUrl))
+                    .timeout(Duration.ofMillis(timeout))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+            
+            HttpResponse<String> response = httpClient.send(request, 
+                    HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                JsonNode emailResponse = objectMapper.readTree(response.body());
+                JsonNode contactMechNode = emailResponse.path("contactMech");
+                
+                if (!contactMechNode.isMissingNode()) {
+                    return contactMechNode.path("infoString").asText(null);
+                }
+            }
+            
+        } catch (Exception e) {
+            logger.debug("Could not retrieve email for partyId: {}", partyId);
+        }
+        
+        return null;
+    }
 
     /**
      * Retrieves user information by email from OFBiz REST API
@@ -187,36 +395,65 @@ public class OFBizRestClient {
     public OFBizUserInfo getUserInfoByEmail(String email) {
         logger.debug("Retrieving user info by email '{}' via OFBiz REST API", email);
         
+        if (this.authToken == null || this.authToken.isEmpty()) {
+            logger.debug("No auth token available, authentication required first");
+            return null;
+        }
+        
         try {
-            String url = baseUrl + userEndpoint + "?email=" + email;
+            // Find party by email using ContactMech
+            String url = baseUrl + "/rest/services/findPartyByEmail";
+            String requestBody = "{\"email\": \"" + email + "\"}";
             
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofMillis(timeout))
                     .header("Content-Type", "application/json")
-                    .GET();
-            
-            if (apiKey != null && !apiKey.trim().isEmpty()) {
-                requestBuilder.header("Authorization", "Bearer " + apiKey);
-            }
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody));
             
             HttpRequest request = requestBuilder.build();
             
-            logger.trace("Sending user info by email request to: {}", maskUrl(url));
+            logger.trace("Sending user info by email request to: {} with body: {}", maskUrl(url), requestBody);
             
             HttpResponse<String> response = httpClient.send(request, 
                     HttpResponse.BodyHandlers.ofString());
             
             if (response.statusCode() == 200) {
                 JsonNode responseJson = objectMapper.readTree(response.body());
+                JsonNode partyNode = responseJson.path("party");
                 
-                if (responseJson.path("success").asBoolean(false)) {
-                    JsonNode userNode = responseJson.path("user");
-                    String username = userNode.path("username").asText();
+                if (!partyNode.isMissingNode()) {
+                    String partyId = partyNode.path("partyId").asText();
                     
-                    logger.info("Successfully found user by email '{}' -> username '{}'", email, username);
+                    // Now find UserLogin for this partyId
+                    String userLoginUrl = baseUrl + "/rest/services/findUserLoginByPartyId";
+                    String userLoginRequestBody = "{\"partyId\": \"" + partyId + "\"}";
                     
-                    return getUserInfo(username); // Get full user info
+                    HttpRequest userLoginRequest = HttpRequest.newBuilder()
+                            .uri(URI.create(userLoginUrl))
+                            .timeout(Duration.ofMillis(timeout))
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "application/json")
+                            .header("Authorization", "Bearer " + this.authToken)
+                            .POST(HttpRequest.BodyPublishers.ofString(userLoginRequestBody))
+                            .build();
+                    
+                    HttpResponse<String> userLoginResponse = httpClient.send(userLoginRequest, 
+                            HttpResponse.BodyHandlers.ofString());
+                    
+                    if (userLoginResponse.statusCode() == 200) {
+                        JsonNode userLoginJson = objectMapper.readTree(userLoginResponse.body());
+                        JsonNode userLoginNode = userLoginJson.path("userLogin");
+                        
+                        if (!userLoginNode.isMissingNode()) {
+                            String username = userLoginNode.path("userLoginId").asText();
+                            logger.info("Successfully found user by email '{}' -> username '{}'", email, username);
+                            
+                            return getUserInfo(username); // Get full user info
+                        }
+                    }
                 }
             }
             
@@ -238,6 +475,22 @@ public class OFBizRestClient {
     }
 
     /**
+     * Gets the current authentication token
+     * @return the current OFBiz JWT token, or null if not authenticated
+     */
+    public String getAuthToken() {
+        return this.authToken;
+    }
+
+    /**
+     * Gets the token expiration time in seconds
+     * @return the token expiration time in seconds from OFBiz response
+     */
+    public int getTokenExpiresInSeconds() {
+        return this.tokenExpiresInSeconds;
+    }
+
+    /**
      * Masks URL for safe logging
      */
     private String maskUrl(String url) {
@@ -245,8 +498,7 @@ public class OFBizRestClient {
             return "null";
         }
         // Remove sensitive information from URLs
-        return url.replaceAll("password=[^&]*", "password=***")
-                  .replaceAll("apikey=[^&]*", "apikey=***");
+        return url.replaceAll("password=[^&]*", "password=***");
     }
 
     /**

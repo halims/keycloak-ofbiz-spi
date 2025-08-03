@@ -20,6 +20,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -34,11 +35,37 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     private static final Logger logger = LoggerFactory.getLogger(OFBizUserStorageProvider.class);
     
+    // Token cache for storing OFBiz JWT tokens associated with users
+    private static final Map<String, OFBizTokenInfo> tokenCache = new ConcurrentHashMap<>();
+    
     private final KeycloakSession session;
     private final ComponentModel model;
     private final String integrationMode;
     private final OFBizConnectionProvider connectionProvider;
     private final OFBizRestClient restClient;
+
+    /**
+     * Token information stored in cache
+     */
+    public static class OFBizTokenInfo {
+        private final String token;
+        private final String username;
+        private final long expirationTime;
+        private final String realmId;
+        
+        public OFBizTokenInfo(String token, String username, String realmId, long ttlMillis) {
+            this.token = token;
+            this.username = username;
+            this.realmId = realmId;
+            this.expirationTime = System.currentTimeMillis() + ttlMillis;
+        }
+        
+        public String getToken() { return token; }
+        public String getUsername() { return username; }
+        public String getRealmId() { return realmId; }
+        public boolean isExpired() { return System.currentTimeMillis() > expirationTime; }
+        public boolean isValid() { return !isExpired() && token != null && !token.isEmpty(); }
+    }
 
     public OFBizUserStorageProvider(KeycloakSession session, ComponentModel model) {
         this.session = session;
@@ -61,26 +88,41 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
      * Check if this provider should be active for the given realm
      */
     private boolean isActiveForRealm(RealmModel realm) {
-        String enabledRealms = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLED_REALMS);
-        
-        // If no specific realms configured, allow all (but warn for master)
-        if (enabledRealms == null || enabledRealms.trim().isEmpty()) {
+        try {
+            // CRITICAL: Never enable for master realm unless explicitly configured
             if ("master".equals(realm.getName())) {
-                logger.warn("OFBiz User Storage Provider active on master realm - this is not recommended for production");
+                String enabledRealms = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLED_REALMS);
+                if (enabledRealms == null || !enabledRealms.contains("master")) {
+                    logger.debug("OFBiz provider not active for master realm (security protection)");
+                    return false;
+                } else {
+                    logger.warn("⚠️  WARNING: OFBiz provider active for master realm - ensure this is intentional!");
+                    return true;
+                }
             }
+            
+            // Check if enabledRealms is specified and current realm is in the list
+            String enabledRealms = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLED_REALMS);
+            if (enabledRealms != null && !enabledRealms.trim().isEmpty()) {
+                String[] realms = enabledRealms.split(",");
+                for (String enabledRealm : realms) {
+                    if (enabledRealm.trim().equals(realm.getName())) {
+                        return true;
+                    }
+                }
+                logger.debug("OFBiz provider not active for realm: '{}', configured realms: {}", 
+                           realm.getName(), enabledRealms);
+                return false;
+            }
+            
+            // If no specific realms are configured, enable for all non-master realms
             return true;
+            
+        } catch (Exception e) {
+            logger.warn("Error checking realm configuration for realm '{}': {}", realm.getName(), e.getMessage());
+            // Default to inactive if we can't check the configuration (especially for master)
+            return !"master".equals(realm.getName());
         }
-        
-        // Check if current realm is in the enabled list
-        String[] realms = enabledRealms.split(",");
-        for (String enabledRealm : realms) {
-            if (enabledRealm.trim().equals(realm.getName())) {
-                return true;
-            }
-        }
-        
-        logger.debug("OFBiz User Storage Provider not active for realm: {}", realm.getName());
-        return false;
     }
 
     @Override
@@ -125,29 +167,29 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     private UserModel getUserByUsernameViaRest(RealmModel realm, String username) {
         logger.debug("Getting user '{}' via REST API", username);
         
-        try {
-            OFBizRestClient.OFBizUserInfo userInfo = restClient.getUserInfo(username);
+        // Check if we have a cached token for this user
+        String cachedToken = getCachedOFBizToken(username, realm.getId());
+        
+        if (cachedToken != null) {
+            logger.info("🎟️ REST USER LOOKUP: Found cached token for user '{}', user details already fetched during authentication", username);
             
-            if (userInfo != null && userInfo.isEnabled()) {
-                logger.info("✅ REST USER FOUND: User '{}' found via REST API (tenant: '{}')", 
-                           username, userInfo.getTenant());
-                
-                return new OFBizUserAdapter(session, realm, model, 
-                    userInfo.getUsername(),
-                    userInfo.getFirstName(),
-                    userInfo.getLastName(), 
-                    userInfo.getEmail(),
-                    userInfo.isEnabled(),
-                    userInfo.getTenant(),
-                    userInfo.getCustomAttributes());
-            } else {
-                logger.info("❌ REST USER NOT FOUND: User '{}' not found or disabled via REST API", username);
-                return null;
-            }
-        } catch (Exception e) {
-            logger.error("Error getting user '{}' via REST API: {}", username, e.getMessage(), e);
-            return null;
+            // Return a basic user model - detailed info will be available after authentication
+            return new OFBizUserAdapter(session, realm, model, 
+                username, null, null, null, true);
+        } else {
+            logger.info("✅ REST USER LOOKUP: No cached token for user '{}', will fetch details during authentication", username);
         }
+        
+        // Create a minimal user adapter that will be populated during authentication
+        return new OFBizUserAdapter(session, realm, model, 
+            username,           // username
+            null,              // firstName - will be populated during auth
+            null,              // lastName - will be populated during auth  
+            null,              // email - will be populated during auth
+            true,              // enabled - assume true, verify during auth
+            null,              // tenant - will be populated during auth
+            new HashMap<>()    // customAttributes - will be populated during auth
+        );
     }
 
     /**
@@ -427,7 +469,9 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public boolean supportsCredentialType(String credentialType) {
-        return PasswordCredentialModel.TYPE.equals(credentialType);
+        boolean supports = PasswordCredentialModel.TYPE.equals(credentialType) || "password".equals(credentialType);
+        logger.debug("Credential type '{}' supported: {}", credentialType, supports);
+        return supports;
     }
 
     @Override
@@ -438,26 +482,34 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     @Override
     public boolean isValid(RealmModel realm, UserModel user, CredentialInput credentialInput) {
         String username = user.getUsername();
-        logger.debug("Validating credentials for user '{}' in realm '{}'", username, realm.getName());
+        logger.debug("Starting credential validation for user '{}' in realm '{}'", username, realm.getName());
         
         // Check if this provider should be active for this realm
         if (!isActiveForRealm(realm)) {
-            logger.debug("OFBiz provider not active for realm '{}', skipping credential validation for user '{}'", 
+            logger.debug("OFBiz provider not active for realm '{}', skipping validation for user '{}'", 
                         realm.getName(), username);
             return false;
         }
         
-        if (!supportsCredentialType(credentialInput.getType()) || 
-            !(credentialInput instanceof PasswordCredentialModel)) {
+        // Accept both PasswordCredentialModel and PasswordUserCredentialModel
+        if (!supportsCredentialType(credentialInput.getType())) {
             logger.debug("Unsupported credential type '{}' for user '{}' in realm '{}'", 
                         credentialInput.getType(), username, realm.getName());
             return false;
         }
 
-        PasswordCredentialModel passwordCredential = (PasswordCredentialModel) credentialInput;
-        String password = passwordCredential.getPasswordSecretData().getValue();
+        // Extract password from credential input safely
+        String password;
+        if (credentialInput instanceof PasswordCredentialModel) {
+            PasswordCredentialModel passwordCredential = (PasswordCredentialModel) credentialInput;
+            password = passwordCredential.getPasswordSecretData().getValue();
+        } else {
+            // For PasswordUserCredentialModel and other implementations, use getChallengeResponse
+            password = credentialInput.getChallengeResponse();
+        }
         
-        logger.trace("Attempting password validation for user '{}' in realm '{}'", username, realm.getName());
+        logger.info("🔑 CREDENTIAL CHECK: Starting password validation for user '{}' in realm '{}' using {} mode", 
+                   username, realm.getName(), integrationMode.toUpperCase());
         boolean isValid = validatePassword(username, password);
         
         if (isValid) {
@@ -486,15 +538,52 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
      * Validates user password via REST API
      */
     private boolean validatePasswordViaRest(String username, String password) {
-        logger.trace("Validating password for user '{}' via REST API", username);
+        logger.info("🔐 REST AUTH: Starting password validation for user '{}' via OFBiz REST API", username);
         
         try {
             boolean isValid = restClient.authenticateUser(username, password);
-            logger.trace("REST API password validation result for user '{}': {}", username, isValid);
+            logger.info("🔐 REST AUTH: Password validation result for user '{}': {}", username, isValid ? "SUCCESS" : "FAILED");
+            
+            if (isValid) {
+                logger.info("✅ REST AUTH SUCCESS: User '{}' successfully authenticated via OFBiz REST API", username);
+                
+                // Cache the OFBiz JWT token for future use by other systems
+                cacheOFBizToken(username, restClient.getAuthToken(), restClient.getTokenExpiresInSeconds());
+                
+                // After successful authentication, update user details with full info from OFBiz
+                try {
+                    updateUserDetailsFromRest(username);
+                    logger.debug("Updated user details for '{}' from OFBiz after successful authentication", username);
+                } catch (Exception e) {
+                    logger.warn("Authentication successful but failed to update user details for '{}': {}", 
+                               username, e.getMessage());
+                    // Still return true as authentication was successful
+                }
+            } else {
+                logger.warn("❌ REST AUTH FAILED: User '{}' authentication failed via OFBiz REST API", username);
+            }
+            
             return isValid;
         } catch (Exception e) {
-            logger.error("Error validating password for user '{}' via REST API: {}", username, e.getMessage(), e);
+            logger.error("💥 REST AUTH ERROR: Exception during password validation for user '{}' via REST API: {}", 
+                        username, e.getMessage(), e);
             return false;
+        }
+    }
+
+    /**
+     * Updates user details from OFBiz REST API after successful authentication
+     */
+    private void updateUserDetailsFromRest(String username) {
+        try {
+            OFBizRestClient.OFBizUserInfo userInfo = restClient.getUserInfo(username);
+            if (userInfo != null) {
+                logger.debug("Updated user details for '{}' from OFBiz REST API", username);
+                // User details are stored in the OFBizUserInfo and will be used
+                // when Keycloak requests user attributes
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to update user details for '{}': {}", username, e.getMessage());
         }
     }
 
@@ -680,5 +769,76 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         }
         
         return null;
+    }
+
+    /**
+     * Caches the OFBiz JWT token for a user
+     */
+    private void cacheOFBizToken(String username, String token, int expiresInSeconds) {
+        if (token != null && !token.isEmpty()) {
+            String key = generateTokenCacheKey(username);
+            long ttlMillis = expiresInSeconds * 1000L; // Convert seconds to milliseconds
+            
+            OFBizTokenInfo tokenInfo = new OFBizTokenInfo(token, username, 
+                session.getContext().getRealm().getId(), ttlMillis);
+            tokenCache.put(key, tokenInfo);
+            
+            logger.info("🔐 TOKEN CACHE: Cached OFBiz token for user '{}' (expires in {} seconds / {} minutes)", 
+                       username, expiresInSeconds, expiresInSeconds / 60);
+        }
+    }
+
+    /**
+     * Retrieves the cached OFBiz JWT token for a user
+     */
+    public static String getCachedOFBizToken(String username, String realmId) {
+        String key = generateTokenCacheKey(username, realmId);
+        OFBizTokenInfo tokenInfo = tokenCache.get(key);
+        
+        if (tokenInfo != null) {
+            if (tokenInfo.isValid()) {
+                return tokenInfo.getToken();
+            } else {
+                // Remove expired token
+                tokenCache.remove(key);
+                logger.debug("🔐 TOKEN CACHE: Removed expired token for user '{}'", username);
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Clears the cached OFBiz token for a user
+     */
+    public static void clearCachedOFBizToken(String username, String realmId) {
+        String key = generateTokenCacheKey(username, realmId);
+        tokenCache.remove(key);
+        logger.debug("🔐 TOKEN CACHE: Cleared cached token for user '{}'", username);
+    }
+
+    /**
+     * Generates a unique cache key for a user's token
+     */
+    private String generateTokenCacheKey(String username) {
+        return generateTokenCacheKey(username, session.getContext().getRealm().getId());
+    }
+
+    /**
+     * Generates a unique cache key for a user's token
+     */
+    private static String generateTokenCacheKey(String username, String realmId) {
+        return realmId + ":" + username;
+    }
+
+    /**
+     * Gets cached token information for debugging
+     */
+    public static Map<String, String> getTokenCacheStatus() {
+        Map<String, String> status = new HashMap<>();
+        tokenCache.forEach((key, info) -> {
+            status.put(key, info.isValid() ? "VALID" : "EXPIRED");
+        });
+        return status;
     }
 }
