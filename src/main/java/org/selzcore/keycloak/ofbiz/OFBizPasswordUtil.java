@@ -29,7 +29,11 @@ public class OFBizPasswordUtil {
      * @return true if the password matches, false otherwise
      */
     public static boolean verifyPassword(String plainPassword, String storedPassword) {
+        logger.trace("Starting password verification process");
+        
         if (plainPassword == null || storedPassword == null) {
+            logger.debug("Password verification failed: null input (plainPassword: {}, storedPassword: {})", 
+                        plainPassword != null, storedPassword != null);
             return false;
         }
 
@@ -37,32 +41,47 @@ public class OFBizPasswordUtil {
             // OFBiz password format: {hashType}salt$hash
             // Example: {SHA}somesalt$hashedpassword
             
+            logger.trace("Parsing stored password format: {}", maskPassword(storedPassword));
+            
             if (storedPassword.startsWith("{") && storedPassword.contains("}")) {
                 // Extract hash type
                 int endBrace = storedPassword.indexOf("}");
                 String hashType = storedPassword.substring(1, endBrace);
                 String saltAndHash = storedPassword.substring(endBrace + 1);
                 
+                logger.trace("Extracted hash type: {}", hashType);
+                
                 if (saltAndHash.contains(SALT_SEPARATOR)) {
                     String[] parts = saltAndHash.split("\\" + SALT_SEPARATOR, 2);
                     String salt = parts[0];
                     String expectedHash = parts[1];
                     
+                    logger.trace("Extracted salt length: {}, expected hash length: {}", 
+                                salt.length(), expectedHash.length());
+                    
                     String computedHash = hashPassword(plainPassword, salt, hashType);
-                    return expectedHash.equals(computedHash);
+                    boolean result = expectedHash.equals(computedHash);
+                    
+                    logger.debug("Password verification with salt completed: {}", result);
+                    return result;
                 } else {
                     // No salt, just hash
                     String expectedHash = saltAndHash;
                     String computedHash = hashPassword(plainPassword, "", hashType);
-                    return expectedHash.equals(computedHash);
+                    boolean result = expectedHash.equals(computedHash);
+                    
+                    logger.debug("Password verification without salt completed: {}", result);
+                    return result;
                 }
             } else {
                 // Legacy format or plain text (not recommended)
-                logger.warn("Password stored in legacy format or plain text");
-                return plainPassword.equals(storedPassword);
+                logger.warn("Password stored in legacy format or plain text - security risk!");
+                boolean result = plainPassword.equals(storedPassword);
+                logger.debug("Plain text password comparison result: {}", result);
+                return result;
             }
         } catch (Exception e) {
-            logger.error("Error verifying password", e);
+            logger.error("Error during password verification: {}", e.getMessage(), e);
             return false;
         }
     }
@@ -76,9 +95,13 @@ public class OFBizPasswordUtil {
      * @return The hashed password
      */
     public static String hashPassword(String password, String salt, String hashType) {
+        logger.trace("Hashing password with salt length: {}, hash type: {}", 
+                    salt != null ? salt.length() : 0, hashType);
+        
         try {
             // Normalize hash type
             String algorithm = normalizeHashType(hashType);
+            logger.trace("Using algorithm: {}", algorithm);
             
             MessageDigest digest = MessageDigest.getInstance(algorithm);
             
@@ -87,10 +110,13 @@ public class OFBizPasswordUtil {
             byte[] hashBytes = digest.digest(saltedPassword.getBytes("UTF-8"));
             
             // Convert to Base64 (OFBiz typically uses Base64 encoding)
-            return Base64.getEncoder().encodeToString(hashBytes);
+            String hashedPassword = Base64.getEncoder().encodeToString(hashBytes);
+            logger.trace("Password hashing completed, result length: {}", hashedPassword.length());
+            
+            return hashedPassword;
             
         } catch (Exception e) {
-            logger.error("Error hashing password", e);
+            logger.error("Error hashing password with algorithm '{}': {}", hashType, e.getMessage(), e);
             throw new RuntimeException("Failed to hash password", e);
         }
     }
@@ -171,5 +197,22 @@ public class OFBizPasswordUtil {
         } catch (NoSuchAlgorithmException e) {
             return false;
         }
+    }
+
+    /**
+     * Masks password for safe logging
+     * 
+     * @param password The password to mask
+     * @return A masked version showing only the format
+     */
+    private static String maskPassword(String password) {
+        if (password == null) {
+            return "null";
+        }
+        if (password.length() < 10) {
+            return "***";
+        }
+        // Show first 3 characters and last 3 characters for format identification
+        return password.substring(0, 3) + "***" + password.substring(password.length() - 3);
     }
 }

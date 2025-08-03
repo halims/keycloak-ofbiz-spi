@@ -28,10 +28,54 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public static final String CONFIG_KEY_DB_PASSWORD = "password";
     public static final String CONFIG_KEY_VALIDATION_QUERY = "validationQuery";
     public static final String CONFIG_KEY_POOL_SIZE = "poolSize";
+    public static final String CONFIG_KEY_ENABLED_REALMS = "enabledRealms";
 
     @Override
     public OFBizUserStorageProvider create(KeycloakSession session, ComponentModel model) {
-        logger.debug("Creating OFBiz User Storage Provider for model: {}", model.getName());
+        logger.debug("Creating OFBiz User Storage Provider for model: {} in realm: {}", 
+                    model.getName(), model.getParentId());
+        
+        // Get the realm for this component
+        RealmModel realm = session.realms().getRealm(model.getParentId());
+        if (realm == null) {
+            logger.warn("❌ Cannot create OFBiz provider: realm not found for ID: {}", model.getParentId());
+            return null;
+        }
+        
+        logger.debug("Provider requested for realm: '{}' (ID: {})", realm.getName(), realm.getId());
+        
+        // CRITICAL: Never create provider for master realm unless explicitly configured
+        if ("master".equals(realm.getName())) {
+            String enabledRealms = model.get(CONFIG_KEY_ENABLED_REALMS);
+            if (enabledRealms == null || !enabledRealms.contains("master")) {
+                logger.warn("🚫 SECURITY: Refusing to create OFBiz User Storage Provider for master realm. " +
+                           "This is a security protection. Configure 'enabledRealms' property to explicitly enable.");
+                return null; // Don't create provider for master realm
+            } else {
+                logger.warn("⚠️  WARNING: OFBiz provider explicitly enabled for master realm - ensure this is intentional!");
+            }
+        }
+        
+        // Additional check: if enabledRealms is specified, ensure current realm is in the list
+        String enabledRealms = model.get(CONFIG_KEY_ENABLED_REALMS);
+        if (enabledRealms != null && !enabledRealms.trim().isEmpty()) {
+            String[] realms = enabledRealms.split(",");
+            boolean isEnabled = false;
+            for (String enabledRealm : realms) {
+                if (enabledRealm.trim().equals(realm.getName())) {
+                    isEnabled = true;
+                    break;
+                }
+            }
+            if (!isEnabled) {
+                logger.debug("❌ OFBiz provider not enabled for realm: '{}', configured realms: {}", 
+                           realm.getName(), enabledRealms);
+                return null; // Don't create provider for non-enabled realms
+            }
+        }
+        
+        logger.info("✅ Creating OFBiz User Storage Provider for realm: '{}' (model: {})", 
+                   realm.getName(), model.getName());
         return new OFBizUserStorageProvider(session, model);
     }
 
@@ -89,6 +133,12 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                     .helpText("Maximum number of database connections in the pool")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("10")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_ENABLED_REALMS)
+                    .label("Enabled Realms")
+                    .helpText("Comma-separated list of realm names where this provider should be active (optional, leave empty to allow all)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
                     .add()
                 .build();
     }

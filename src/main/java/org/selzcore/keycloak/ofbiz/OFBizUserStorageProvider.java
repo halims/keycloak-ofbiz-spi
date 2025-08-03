@@ -44,6 +44,32 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         this.connectionProvider = new OFBizConnectionProvider(model);
     }
 
+    /**
+     * Check if this provider should be active for the given realm
+     */
+    private boolean isActiveForRealm(RealmModel realm) {
+        String enabledRealms = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLED_REALMS);
+        
+        // If no specific realms configured, allow all (but warn for master)
+        if (enabledRealms == null || enabledRealms.trim().isEmpty()) {
+            if ("master".equals(realm.getName())) {
+                logger.warn("OFBiz User Storage Provider active on master realm - this is not recommended for production");
+            }
+            return true;
+        }
+        
+        // Check if current realm is in the enabled list
+        String[] realms = enabledRealms.split(",");
+        for (String enabledRealm : realms) {
+            if (enabledRealm.trim().equals(realm.getName())) {
+                return true;
+            }
+        }
+        
+        logger.debug("OFBiz User Storage Provider not active for realm: {}", realm.getName());
+        return false;
+    }
+
     @Override
     public void close() {
         if (connectionProvider != null) {
@@ -60,7 +86,14 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public UserModel getUserByUsername(RealmModel realm, String username) {
-        logger.debug("Getting user by username: {}", username);
+        logger.debug("Looking up user '{}' in realm '{}'", username, realm.getName());
+        
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm '{}', skipping user lookup for '{}'", 
+                        realm.getName(), username);
+            return null;
+        }
         
         try (Connection connection = connectionProvider.getConnection()) {
             String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, " +
@@ -73,17 +106,29 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         "AND cm.contact_mech_type_id = 'EMAIL_ADDRESS' " +
                         "WHERE ul.user_login_id = ? AND ul.enabled = 'Y'";
             
+            logger.trace("Executing SQL query for user '{}': {}", username, sql);
+            
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, username);
                 
                 try (ResultSet rs = stmt.executeQuery()) {
                     if (rs.next()) {
+                        String foundUsername = rs.getString("user_login_id");
+                        String email = rs.getString("email");
+                        boolean enabled = "Y".equals(rs.getString("enabled"));
+                        
+                        logger.info("Successfully found user '{}' in OFBiz database (realm: '{}', email: '{}', enabled: {})", 
+                                   foundUsername, realm.getName(), email != null ? email : "none", enabled);
+                        
                         return mapUserFromResultSet(realm, rs);
+                    } else {
+                        logger.info("User '{}' not found in OFBiz database (realm: '{}')", username, realm.getName());
                     }
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error getting user by username: {}", username, e);
+            logger.error("Database error while looking up user '{}' in realm '{}': {}", 
+                        username, realm.getName(), e.getMessage(), e);
         }
         
         return null;
@@ -91,7 +136,14 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public UserModel getUserByEmail(RealmModel realm, String email) {
-        logger.debug("Getting user by email: {}", email);
+        logger.debug("Looking up user by email '{}' in realm '{}'", email, realm.getName());
+        
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm '{}', skipping email lookup for '{}'", 
+                        realm.getName(), email);
+            return null;
+        }
         
         try (Connection connection = connectionProvider.getConnection()) {
             String sql = "SELECT ul.user_login_id, ul.current_password, ul.enabled, " +
@@ -105,17 +157,28 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         "AND cm.info_string = ? " +
                         "AND ul.enabled = 'Y'";
             
+            logger.trace("Executing SQL query for email '{}': {}", email, sql);
+            
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, email);
                 
                 try (ResultSet rs = stmt.executeQuery()) {
                     if (rs.next()) {
+                        String foundUsername = rs.getString("user_login_id");
+                        boolean enabled = "Y".equals(rs.getString("enabled"));
+                        
+                        logger.info("Successfully found user by email '{}' -> username '{}' (realm: '{}', enabled: {})", 
+                                   email, foundUsername, realm.getName(), enabled);
+                        
                         return mapUserFromResultSet(realm, rs);
+                    } else {
+                        logger.info("No user found with email '{}' in OFBiz database (realm: '{}')", email, realm.getName());
                     }
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error getting user by email: {}", email, e);
+            logger.error("Database error while looking up user by email '{}' in realm '{}': {}", 
+                        email, realm.getName(), e.getMessage(), e);
         }
         
         return null;
@@ -145,7 +208,13 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     @Override
     public Stream<UserModel> searchForUserStream(RealmModel realm, Map<String, String> params, 
             Integer firstResult, Integer maxResults) {
-        logger.debug("Searching for users with params: {}", params);
+        logger.debug("Searching for users with params: {} in realm: {}", params, realm.getName());
+        
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm: {}, returning empty search results", realm.getName());
+            return Stream.empty();
+        }
         
         List<UserModel> users = new ArrayList<>();
         String search = params.get(UserModel.SEARCH);
@@ -209,6 +278,14 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     @Override
     public Stream<UserModel> searchForUserByUserAttributeStream(RealmModel realm, 
             String attrName, String attrValue) {
+        logger.debug("Searching for users by attribute: {}={} in realm: {}", attrName, attrValue, realm.getName());
+        
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm: {}, returning empty search results", realm.getName());
+            return Stream.empty();
+        }
+        
         // Attribute-based search can be implemented here if needed
         return Stream.empty();
     }
@@ -225,27 +302,50 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     @Override
     public boolean isValid(RealmModel realm, UserModel user, CredentialInput credentialInput) {
-        logger.debug("Validating credentials for user: {}", user.getUsername());
+        String username = user.getUsername();
+        logger.debug("Validating credentials for user '{}' in realm '{}'", username, realm.getName());
+        
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm '{}', skipping credential validation for user '{}'", 
+                        realm.getName(), username);
+            return false;
+        }
         
         if (!supportsCredentialType(credentialInput.getType()) || 
             !(credentialInput instanceof PasswordCredentialModel)) {
+            logger.debug("Unsupported credential type '{}' for user '{}' in realm '{}'", 
+                        credentialInput.getType(), username, realm.getName());
             return false;
         }
 
         PasswordCredentialModel passwordCredential = (PasswordCredentialModel) credentialInput;
         String password = passwordCredential.getPasswordSecretData().getValue();
         
-        return validatePassword(user.getUsername(), password);
+        logger.trace("Attempting password validation for user '{}' in realm '{}'", username, realm.getName());
+        boolean isValid = validatePassword(username, password);
+        
+        if (isValid) {
+            logger.info("✅ LOGIN SUCCESS: User '{}' successfully authenticated in realm '{}'", username, realm.getName());
+        } else {
+            logger.warn("❌ LOGIN FAILED: Invalid credentials for user '{}' in realm '{}'", username, realm.getName());
+        }
+        
+        return isValid;
     }
 
     /**
      * Validates user password against OFBiz database
      */
     private boolean validatePassword(String username, String password) {
+        logger.trace("Validating password for user '{}' against OFBiz database", username);
+        
         try (Connection connection = connectionProvider.getConnection()) {
             String sql = "SELECT ul.current_password, ul.password_hint " +
                         "FROM user_login ul " +
                         "WHERE ul.user_login_id = ? AND ul.enabled = 'Y'";
+            
+            logger.trace("Executing password validation SQL for user '{}': {}", username, sql);
             
             try (PreparedStatement stmt = connection.prepareStatement(sql)) {
                 stmt.setString(1, username);
@@ -254,14 +354,22 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                     if (rs.next()) {
                         String storedPassword = rs.getString("current_password");
                         
+                        logger.trace("Found stored password hash for user '{}', verifying with OFBizPasswordUtil", username);
+                        
                         // OFBiz typically uses SHA-1 hashing with salt
                         // You may need to adjust this based on your OFBiz password configuration
-                        return OFBizPasswordUtil.verifyPassword(password, storedPassword);
+                        boolean passwordValid = OFBizPasswordUtil.verifyPassword(password, storedPassword);
+                        
+                        logger.debug("Password verification result for user '{}': {}", username, passwordValid);
+                        return passwordValid;
+                    } else {
+                        logger.warn("No password record found for user '{}' in OFBiz database", username);
+                        return false;
                     }
                 }
             }
         } catch (SQLException e) {
-            logger.error("Error validating password for user: {}", username, e);
+            logger.error("Database error during password validation for user '{}': {}", username, e.getMessage(), e);
         }
         
         return false;

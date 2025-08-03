@@ -6,6 +6,8 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.storage.StorageId;
 import org.keycloak.storage.adapter.AbstractUserAdapterFederatedStorage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -14,6 +16,8 @@ import java.util.Map;
  * User adapter for OFBiz users in Keycloak
  */
 public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
+
+    private static final Logger logger = LoggerFactory.getLogger(OFBizUserAdapter.class);
 
     private final String username;
     private final String firstName;
@@ -29,6 +33,9 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
         this.lastName = lastName;
         this.email = email;
         this.enabled = enabled;
+        
+        logger.debug("Created OFBizUserAdapter for user '{}' in realm '{}' (email: '{}', enabled: {})", 
+                    username, realm.getName(), email != null ? email : "none", enabled);
     }
 
     @Override
@@ -40,6 +47,7 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     public void setUsername(String username) {
         // OFBiz usernames are typically not editable through Keycloak
         // This could be implemented to update the OFBiz database if needed
+        logger.debug("Username change attempted for user '{}' - not implemented for OFBiz integration", this.username);
     }
 
     @Override
@@ -50,6 +58,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     @Override
     public void setFirstName(String firstName) {
         // This could be implemented to update the OFBiz database if needed
+        logger.debug("First name change attempted for user '{}': '{}' -> '{}' - using federated storage", 
+                    this.username, this.firstName, firstName);
         setSingleAttribute("firstName", firstName);
     }
 
@@ -61,6 +71,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     @Override
     public void setLastName(String lastName) {
         // This could be implemented to update the OFBiz database if needed
+        logger.debug("Last name change attempted for user '{}': '{}' -> '{}' - using federated storage", 
+                    this.username, this.lastName, lastName);
         setSingleAttribute("lastName", lastName);
     }
 
@@ -72,6 +84,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     @Override
     public void setEmail(String email) {
         // This could be implemented to update the OFBiz database if needed
+        logger.debug("Email change attempted for user '{}': '{}' -> '{}' - using federated storage", 
+                    this.username, this.email, email);
         setSingleAttribute("email", email);
     }
 
@@ -95,6 +109,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     @Override
     public void setEnabled(boolean enabled) {
         // This could be implemented to update the OFBiz database if needed
+        logger.debug("Enabled status change attempted for user '{}': {} -> {} - using federated storage", 
+                    this.username, this.enabled, enabled);
         setSingleAttribute("enabled", Boolean.toString(enabled));
     }
 

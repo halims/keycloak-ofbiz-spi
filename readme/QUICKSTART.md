@@ -42,16 +42,32 @@ $KEYCLOAK_HOME/bin/kc.sh start
 ```
 
 ### 4. Configure in Keycloak Admin Console
-1. Log into Keycloak Admin Console
-2. Select your realm
-3. Go to "User Federation"
-4. Click "Add provider" → "ofbiz-user-storage"
-5. Configure database settings:
-   - **JDBC Driver**: `com.mysql.cj.jdbc.Driver`
-   - **JDBC URL**: `jdbc:mysql://localhost:3306/ofbiz`
-   - **Username**: `ofbiz`
-   - **Password**: `your_password`
-6. Save and test
+
+⚠️ **IMPORTANT**: Never configure this SPI on the master realm. Always create a dedicated realm for your application.
+
+#### Step 1: Create a New Realm
+1. Log into Keycloak Admin Console (http://localhost:8080/admin/)
+2. Click the realm dropdown (top-left) → "Create Realm"
+3. Enter name: `myapp-realm`
+4. Click "Create"
+
+#### Step 2: Configure User Federation
+1. In your new realm, go to "User Federation"
+2. Click "Add provider" → "ofbiz-user-storage"
+3. Configure database settings:
+   - **Console Display Name**: `OFBiz Users`
+   - **JDBC Driver**: `com.mysql.cj.jdbc.Driver` (or `org.postgresql.Driver` for PostgreSQL)
+   - **JDBC URL**: `jdbc:mysql://mysql:3306/ofbiz` (Docker) or `jdbc:mysql://localhost:3306/ofbiz`
+   - **Database Username**: `ofbiz`
+   - **Database Password**: `ofbiz`
+   - **Enabled Realms**: `myapp-realm` (⭐ **KEY SETTING** - restricts SPI to this realm only)
+4. Click "Save"
+5. Test connection: **Action** → **Test connection**
+
+#### Step 3: Verify Configuration
+- ✅ **myapp-realm**: Uses OFBiz authentication
+- ✅ **master realm**: Uses default Keycloak authentication (protected)
+- ✅ **other realms**: Use default Keycloak authentication
 
 ## Test Users (Docker Environment)
 - **Username**: `admin`, **Password**: `password`

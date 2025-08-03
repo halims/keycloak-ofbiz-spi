@@ -4,10 +4,8 @@ import org.keycloak.component.ComponentModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -28,11 +26,15 @@ public class OFBizConnectionProvider {
     public OFBizConnectionProvider(ComponentModel model) {
         this.model = model;
         this.connectionKey = generateConnectionKey(model);
+        logger.debug("Created OFBiz connection provider with key: {}", maskConnectionKey(connectionKey));
     }
 
     public Connection getConnection() throws SQLException {
+        logger.trace("Requesting database connection");
         HikariDataSource dataSource = getOrCreateDataSource();
-        return dataSource.getConnection();
+        Connection connection = dataSource.getConnection();
+        logger.trace("Database connection acquired successfully");
+        return connection;
     }
 
     public void close() {
@@ -54,13 +56,19 @@ public class OFBizConnectionProvider {
         String validationQuery = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_VALIDATION_QUERY);
         String poolSizeStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_POOL_SIZE);
         
+        logger.debug("Database connection config - Driver: {}, URL: {}, Username: {}", 
+                    jdbcDriver, maskJdbcUrl(jdbcUrl), username);
+        
         int poolSize = 10;
         if (poolSizeStr != null && !poolSizeStr.trim().isEmpty()) {
             try {
                 poolSize = Integer.parseInt(poolSizeStr);
+                logger.debug("Using configured pool size: {}", poolSize);
             } catch (NumberFormatException e) {
                 logger.warn("Invalid pool size value: {}, using default: 10", poolSizeStr);
             }
+        } else {
+            logger.debug("Using default pool size: {}", poolSize);
         }
 
         HikariConfig config = new HikariConfig();
@@ -75,8 +83,12 @@ public class OFBizConnectionProvider {
         config.setMaxLifetime(1800000); // 30 minutes
         config.setLeakDetectionThreshold(60000); // 1 minute
         
+        logger.debug("HikariCP pool configuration - MaxPool: {}, MinIdle: {}, ConnTimeout: {}ms", 
+                    config.getMaximumPoolSize(), config.getMinimumIdle(), config.getConnectionTimeout());
+        
         if (validationQuery != null && !validationQuery.trim().isEmpty()) {
             config.setConnectionTestQuery(validationQuery);
+            logger.debug("Using validation query: {}", validationQuery);
         }
         
         // Additional HikariCP optimizations
@@ -118,5 +130,26 @@ public class OFBizConnectionProvider {
             }
         });
         dataSources.clear();
+    }
+
+    /**
+     * Masks connection key for safe logging
+     */
+    private String maskConnectionKey(String key) {
+        if (key == null || key.length() < 10) {
+            return "***";
+        }
+        return key.substring(0, 5) + "***" + key.substring(key.length() - 5);
+    }
+
+    /**
+     * Masks JDBC URL for safe logging
+     */
+    private String maskJdbcUrl(String url) {
+        if (url == null) {
+            return "null";
+        }
+        // Remove password from URL if present
+        return url.replaceAll("password=[^&;]*", "password=***");
     }
 }
