@@ -62,7 +62,9 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
         if (!shouldEnable) {
             logger.debug("OFBiz provider disabled for realm: '{}'", realm.getName());
         } else {
-            logger.info("✅ Creating OFBiz User Storage Provider for realm: '{}' (model: {})", 
+            // Only log at INFO level the first time or when it's actually significant
+            // Reduce noise from repeated provider creation calls
+            logger.debug("✅ Creating OFBiz User Storage Provider for realm: '{}' (model: {})", 
                        realm.getName(), model.getName());
         }
         
@@ -157,7 +159,7 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                     .label("OFBiz User Info Endpoint")
                     .helpText("REST endpoint for user information and tenant data (REST mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
-                    .defaultValue("/rest/services/findUserLogin")
+                    .defaultValue("/rest/services/getUserInfo")
                     .add()
                 .property()
                     .name(CONFIG_KEY_OFBIZ_TIMEOUT)

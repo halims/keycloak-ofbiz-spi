@@ -207,6 +207,7 @@ public class OFBizRestClient {
 
     /**
      * Retrieves user information and tenant data from OFBiz REST API
+     * Uses the new getUserInfo service that returns data.email and data.tenantId
      * Requires prior authentication to have a valid auth token
      */
     public OFBizUserInfo getUserInfo(String username) {
@@ -219,8 +220,8 @@ public class OFBizRestClient {
         }
         
         try {
-            // Use OFBiz REST service to get user info - use POST with service parameters
-            String url = baseUrl + "/rest/services/findUserLogin";
+            // Use OFBiz REST service to get user info - POST to /rest/services/getUserInfo
+            String url = baseUrl + userEndpoint; // This will be /rest/services/getUserInfo
             
             // Create request body with service parameters
             String requestBody = "{\"userLoginId\": \"" + username + "\"}";
@@ -245,23 +246,53 @@ public class OFBizRestClient {
             if (response.statusCode() == 200) {
                 JsonNode responseJson = objectMapper.readTree(response.body());
                 
-                // Check if we got user data
-                JsonNode userLoginNode = responseJson.path("userLogin");
-                if (!userLoginNode.isMissingNode() && !userLoginNode.isNull()) {
+                // Check if we got data object
+                JsonNode dataNode = responseJson.path("data");
+                if (!dataNode.isMissingNode() && !dataNode.isNull()) {
                     
-                    // Get additional user details from Person entity
-                    OFBizUserInfo userInfo = getUserPersonInfo(username, userLoginNode);
+                    // Extract email and tenantId from data object
+                    String email = dataNode.path("email").asText(null);
+                    String tenantId = dataNode.path("tenantId").asText(null);
+                    String userLoginId = dataNode.path("userLoginId").asText(username);
+                    String partyId = dataNode.path("partyId").asText(null);
                     
-                    if (userInfo != null) {
-                        logger.info("Successfully retrieved user info for '{}' via REST API (tenant: '{}', attributes: {})", 
-                                   username, userInfo.getTenant(), userInfo.getCustomAttributes().size());
-                        return userInfo;
+                    // Extract firstName and lastName if available in the response
+                    String firstName = dataNode.path("firstName").asText(null);
+                    String lastName = dataNode.path("lastName").asText(null);
+                    
+                    // If firstName/lastName are not provided, use defaults to avoid "Update Account" prompt
+                    if (firstName == null || firstName.trim().isEmpty()) {
+                        firstName = "User"; // Default first name
                     }
+                    if (lastName == null || lastName.trim().isEmpty()) {
+                        lastName = userLoginId; // Use username as last name fallback
+                    }
+                    
+                    // Create user info with the retrieved data
+                    OFBizUserInfo userInfo = new OFBizUserInfo(
+                        userLoginId,
+                        firstName,
+                        lastName,  
+                        email,
+                        true, // enabled - assume enabled if found
+                        tenantId != null ? tenantId : "default" // use tenantId from response
+                    );
+                    
+                    // Add custom attributes from the response
+                    if (partyId != null) {
+                        userInfo.addCustomAttribute("partyId", partyId);
+                    }
+                    
+                    logger.debug("Successfully retrieved user info for '{}' via REST API (email: '{}', tenant: '{}', name: '{} {}')", 
+                               username, email, tenantId, firstName, lastName);
+                    return userInfo;
+                } else {
+                    // Check for error in response
+                    String errorMessage = responseJson.path("errorMessage").asText(
+                        responseJson.path("_ERROR_MESSAGE_").asText("No data in response"));
+                    logger.warn("User '{}' info request failed: {}", username, errorMessage);
+                    return null;
                 }
-                
-                // If no userLogin found, try alternative approach
-                logger.warn("User '{}' not found in UserLogin entity", username);
-                return null;
                 
             } else if (response.statusCode() == 401) {
                 logger.warn("Authentication token expired, need to re-authenticate");
@@ -279,116 +310,6 @@ public class OFBizRestClient {
         }
     }
     
-    /**
-     * Gets additional person information for the user
-     */
-    private OFBizUserInfo getUserPersonInfo(String username, JsonNode userLoginNode) {
-        try {
-            String partyId = userLoginNode.path("partyId").asText();
-            if (partyId == null || partyId.isEmpty()) {
-                // Create basic user info from UserLogin only
-                return new OFBizUserInfo(
-                    username,
-                    null, // firstName
-                    null, // lastName
-                    null, // email
-                    !"Y".equals(userLoginNode.path("enabled").asText("Y")), // enabled
-                    null  // tenant
-                );
-            }
-            
-            // Get Person details
-            String personUrl = baseUrl + "/rest/services/findPerson";
-            String requestBody = "{\"partyId\": \"" + partyId + "\"}";
-            
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(personUrl))
-                    .timeout(Duration.ofMillis(timeout))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .header("Authorization", "Bearer " + this.authToken)
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                    .build();
-            
-            HttpResponse<String> response = httpClient.send(request, 
-                    HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                JsonNode personResponse = objectMapper.readTree(response.body());
-                JsonNode personNode = personResponse.path("person");
-                
-                String firstName = personNode.path("firstName").asText(null);
-                String lastName = personNode.path("lastName").asText(null);
-                
-                // Get email from ContactMech
-                String email = getUserEmail(partyId);
-                
-                // Create user info with all available data
-                OFBizUserInfo userInfo = new OFBizUserInfo(
-                    username,
-                    firstName,
-                    lastName,
-                    email,
-                    !"N".equals(userLoginNode.path("enabled").asText("Y")),
-                    partyId // Use partyId as tenant identifier
-                );
-                
-                return userInfo;
-            } else {
-                logger.debug("Could not retrieve person info for partyId: {}", partyId);
-                // Return basic info from UserLogin
-                return new OFBizUserInfo(
-                    username,
-                    null,
-                    null,
-                    null,
-                    !"N".equals(userLoginNode.path("enabled").asText("Y")),
-                    partyId
-                );
-            }
-            
-        } catch (Exception e) {
-            logger.warn("Error getting person info for user '{}': {}", username, e.getMessage());
-            return null;
-        }
-    }
-    
-    /**
-     * Gets user email from ContactMech
-     */
-    private String getUserEmail(String partyId) {
-        try {
-            String emailUrl = baseUrl + "/rest/services/getPartyContactMechByPurpose";
-            String requestBody = "{\"partyId\": \"" + partyId + "\", \"contactMechPurposeTypeId\": \"PRIMARY_EMAIL\"}";
-            
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(emailUrl))
-                    .timeout(Duration.ofMillis(timeout))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .header("Authorization", "Bearer " + this.authToken)
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                    .build();
-            
-            HttpResponse<String> response = httpClient.send(request, 
-                    HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                JsonNode emailResponse = objectMapper.readTree(response.body());
-                JsonNode contactMechNode = emailResponse.path("contactMech");
-                
-                if (!contactMechNode.isMissingNode()) {
-                    return contactMechNode.path("infoString").asText(null);
-                }
-            }
-            
-        } catch (Exception e) {
-            logger.debug("Could not retrieve email for partyId: {}", partyId);
-        }
-        
-        return null;
-    }
-
     /**
      * Retrieves user information by email from OFBiz REST API
      */

@@ -103,8 +103,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
 
     @Override
     public boolean isEmailVerified() {
-        // OFBiz doesn't have built-in email verification
-        // This could be customized based on your OFBiz setup
+        // For OFBiz integration, assume email is verified if present to avoid "Update Account" prompt
+        // OFBiz doesn't have built-in email verification workflow like Keycloak
         return email != null && !email.trim().isEmpty();
     }
 
@@ -169,8 +169,8 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
             attributes.putAll(federatedAttributes);
         }
         
-        logger.debug("Final attributes for user '{}': {} attributes including {} custom attributes", 
-                    username, attributes.size(), customAttributes.size());
+        logger.info("📋 USER ATTRIBUTES for '{}': firstName='{}', lastName='{}', email='{}', emailVerified={}, enabled={}, tenant='{}', totalAttributes={}", 
+                   username, getFirstName(), getLastName(), getEmail(), isEmailVerified(), isEnabled(), tenant, attributes.size());
         
         return attributes;
     }
