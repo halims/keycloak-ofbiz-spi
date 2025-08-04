@@ -249,6 +249,12 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                 // For now, return a user that will trigger proper authentication flow
                 // but with enough details to prevent blank update form
                 logger.info("🏗️ Creating temporary user profile for '{}' - details will be updated after authentication", username);
+                logger.warn("⚠️  TEMPORARY DATA: Using placeholder values for user '{}' because authentication is required first", username);
+                logger.warn("   • firstName: Will use capitalized username as placeholder");
+                logger.warn("   • lastName: Will use 'User' as placeholder");
+                logger.warn("   • email: Will use '{}@example.com' as placeholder", username);
+                logger.warn("   • tenantId: Will use 'default' as placeholder");
+                logger.warn("💡 AFTER AUTHENTICATION: Profile will be updated with real data from OFBiz");
                 
                 // Provide reasonable defaults that will be updated after authentication
                 String tempEmail = username.contains("@") ? username : username + "@example.com";
@@ -619,8 +625,21 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
             logger.info("✅ LOGIN SUCCESS: User '{}' successfully authenticated in realm '{}' using {} mode", 
                        username, realm.getName(), integrationMode.toUpperCase());
         } else {
-            logger.warn("❌ LOGIN FAILED: Invalid credentials for user '{}' in realm '{}' using {} mode", 
+            logger.error("❌ LOGIN FAILED: Authentication failed for user '{}' in realm '{}' using {} mode", 
                        username, realm.getName(), integrationMode.toUpperCase());
+            logger.error("🚨 AUTHENTICATION FAILURE ANALYSIS for user '{}':", username);
+            logger.error("   Possible causes:");
+            logger.error("   1. Invalid credentials (username: '{}', password: [HIDDEN])", username);
+            logger.error("   2. Missing mandatory profile data (firstName, lastName, email)");
+            logger.error("   3. User account disabled in OFBiz");
+            logger.error("   4. Network connectivity issues with OFBiz");
+            logger.error("   5. OFBiz service errors or configuration problems");
+            logger.error("💡 TROUBLESHOOTING STEPS:");
+            logger.error("   1. Verify user credentials: Test login directly against OFBiz");
+            logger.error("   2. Check user profile: Ensure '{}' has complete firstName, lastName, email", username);
+            logger.error("   3. Verify OFBiz connectivity: Check OFBiz logs and network access");
+            logger.error("   4. Test OFBiz REST API: curl -u '{}:[password]' http://ofbiz.local:8080/rest/auth/token", username);
+            logger.error("⚠️  NOTE: Keycloak shows 'invalid_grant' error, but root cause may be incomplete user profile data");
         }
         
         return isValid;
@@ -664,7 +683,13 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                 
                 logger.debug("User '{}' authenticated successfully, details cached for next lookup", username);
             } else {
-                logger.warn("❌ REST AUTH FAILED: User '{}' authentication failed via OFBiz REST API", username);
+                logger.error("❌ REST AUTH FAILED: User '{}' authentication failed via OFBiz REST API", username);
+                logger.error("🔍 POSSIBLE CAUSES for authentication failure:");
+                logger.error("   1. Invalid credentials (wrong username/password)");
+                logger.error("   2. Missing mandatory user profile data (firstName, lastName, email)");
+                logger.error("   3. User account disabled in OFBiz");
+                logger.error("   4. OFBiz getUserInfo service not returning complete user data");
+                logger.error("💡 TROUBLESHOOT: Check OFBiz logs and verify user '{}' profile completeness", username);
             }
             
             return isValid;
@@ -691,6 +716,41 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
             OFBizRestClient.OFBizUserInfo userInfo = restClient.getUserInfo(username);
             
             if (userInfo != null) {
+                // Validate user data before updating federated storage
+                boolean hasValidationErrors = false;
+                StringBuilder missingFields = new StringBuilder();
+                
+                if (userInfo.getFirstName() == null || userInfo.getFirstName().trim().isEmpty() || "User".equals(userInfo.getFirstName())) {
+                    logger.error("❌ MISSING MANDATORY FIELD: firstName is missing or using default for user '{}'", username);
+                    missingFields.append("firstName ");
+                    hasValidationErrors = true;
+                }
+                
+                if (userInfo.getLastName() == null || userInfo.getLastName().trim().isEmpty() || userInfo.getLastName().equals(username)) {
+                    logger.error("❌ MISSING MANDATORY FIELD: lastName is missing or using username fallback for user '{}'", username);
+                    missingFields.append("lastName ");
+                    hasValidationErrors = true;
+                }
+                
+                if (userInfo.getEmail() == null || userInfo.getEmail().trim().isEmpty()) {
+                    logger.error("❌ MISSING MANDATORY FIELD: email is required for user '{}' but not provided by OFBiz", username);
+                    missingFields.append("email ");
+                    hasValidationErrors = true;
+                }
+                
+                if (userInfo.getTenant() == null || userInfo.getTenant().trim().isEmpty() || "default".equals(userInfo.getTenant())) {
+                    logger.warn("⚠️  MISSING FIELD: tenantId is missing or using default for user '{}'", username);
+                    missingFields.append("tenantId ");
+                    hasValidationErrors = true;
+                }
+                
+                if (hasValidationErrors) {
+                    logger.error("🚨 AUTHENTICATION MAY FAIL: User '{}' has incomplete profile data. Missing/default fields: [{}]", 
+                               username, missingFields.toString().trim());
+                    logger.error("💡 TO FIX: Update OFBiz user '{}' profile with complete firstName, lastName, email in Person and ContactMech tables", username);
+                    logger.error("🔧 ALTERNATIVE: Check OFBiz getUserInfo service to ensure it returns all required fields");
+                }
+                
                 // Find the user in the current session to update federated storage
                 UserModel user = session.users().getUserByUsername(realm, username);
                 

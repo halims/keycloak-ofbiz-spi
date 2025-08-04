@@ -260,12 +260,41 @@ public class OFBizRestClient {
                     String firstName = dataNode.path("firstName").asText(null);
                     String lastName = dataNode.path("lastName").asText(null);
                     
-                    // If firstName/lastName are not provided, use defaults to avoid "Update Account" prompt
+                    // Check for missing mandatory fields and log warnings
+                    boolean hasValidationErrors = false;
+                    StringBuilder missingFields = new StringBuilder();
+                    
                     if (firstName == null || firstName.trim().isEmpty()) {
+                        logger.warn("⚠️  MISSING FIELD: firstName is missing for user '{}' - will use default value 'User'", username);
+                        missingFields.append("firstName ");
                         firstName = "User"; // Default first name
+                        hasValidationErrors = true;
                     }
+                    
                     if (lastName == null || lastName.trim().isEmpty()) {
+                        logger.warn("⚠️  MISSING FIELD: lastName is missing for user '{}' - will use username as fallback", username);
+                        missingFields.append("lastName ");
                         lastName = userLoginId; // Use username as last name fallback
+                        hasValidationErrors = true;
+                    }
+                    
+                    if (email == null || email.trim().isEmpty()) {
+                        logger.error("❌ MISSING MANDATORY FIELD: email is required for user '{}' but not provided by OFBiz", username);
+                        missingFields.append("email ");
+                        hasValidationErrors = true;
+                    }
+                    
+                    if (tenantId == null || tenantId.trim().isEmpty()) {
+                        logger.warn("⚠️  MISSING FIELD: tenantId is missing for user '{}' - will use default value 'default'", username);
+                        missingFields.append("tenantId ");
+                        tenantId = "default";
+                        hasValidationErrors = true;
+                    }
+                    
+                    if (hasValidationErrors) {
+                        logger.error("🚨 USER DATA VALIDATION ISSUES for '{}': Missing fields: [{}]. This may cause authentication failures.", 
+                                   username, missingFields.toString().trim());
+                        logger.error("💡 SOLUTION: Ensure OFBiz user '{}' has complete profile data (firstName, lastName, email) in the Person and ContactMech tables", username);
                     }
                     
                     // Create user info with the retrieved data
