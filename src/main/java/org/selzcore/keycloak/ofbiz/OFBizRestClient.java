@@ -32,6 +32,11 @@ public class OFBizRestClient {
     private final String baseUrl;
     private final String authEndpoint;
     private final String userEndpoint;
+    private final String createUserEndpoint;
+    private final String createTenantEndpoint;
+    private final boolean enableUserCreation;
+    private final boolean enableTenantCreation;
+    private final String defaultUserPassword;
     private final int timeout;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -42,6 +47,16 @@ public class OFBizRestClient {
         this.baseUrl = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_BASE_URL);
         this.authEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_AUTH_ENDPOINT);
         this.userEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_USER_ENDPOINT);
+        this.createUserEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_CREATE_USER_ENDPOINT);
+        this.createTenantEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_CREATE_TENANT_ENDPOINT);
+        this.defaultUserPassword = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_DEFAULT_USER_PASSWORD);
+        
+        // Parse boolean configurations
+        String enableUserCreationStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLE_USER_CREATION);
+        this.enableUserCreation = "true".equalsIgnoreCase(enableUserCreationStr);
+        
+        String enableTenantCreationStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLE_TENANT_CREATION);
+        this.enableTenantCreation = "true".equalsIgnoreCase(enableTenantCreationStr);
         
         String timeoutStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_TIMEOUT);
         this.timeout = timeoutStr != null && !timeoutStr.trim().isEmpty() ? 
@@ -438,6 +453,169 @@ public class OFBizRestClient {
      */
     public int getTokenExpiresInSeconds() {
         return this.tokenExpiresInSeconds;
+    }
+
+    /**
+     * Creates a new user in OFBiz via REST API
+     * @param username the username for the new user
+     * @param firstName the first name
+     * @param lastName the last name 
+     * @param email the email address
+     * @param tenantId the tenant/organization ID
+     * @return true if user creation succeeded, false otherwise
+     */
+    public boolean createUser(String username, String firstName, String lastName, String email, String tenantId) {
+        if (!enableUserCreation) {
+            logger.debug("User creation is disabled in configuration");
+            return false;
+        }
+        
+        if (this.authToken == null || this.authToken.isEmpty()) {
+            logger.warn("No authentication token available for user creation - authentication required first");
+            return false;
+        }
+        
+        logger.info("🔨 CREATE USER: Creating new user '{}' in OFBiz via REST API", username);
+        
+        try {
+            String url = baseUrl + (createUserEndpoint != null ? createUserEndpoint : "/rest/services/createUser");
+            
+            // Prepare request body with user data
+            String requestBody = String.format(
+                "{\"userLoginId\": \"%s\", \"firstName\": \"%s\", \"lastName\": \"%s\", \"email\": \"%s\", \"password\": \"%s\", \"tenantId\": \"%s\"}",
+                username, firstName, lastName, email, 
+                defaultUserPassword != null ? defaultUserPassword : "changeme123",
+                tenantId != null ? tenantId : "default"
+            );
+            
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofMillis(timeout))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+            
+            logger.debug("🔨 CREATE USER: Sending user creation request to: {}", maskUrl(url));
+            
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                try {
+                    JsonNode responseJson = objectMapper.readTree(response.body());
+                    boolean success = responseJson.path("success").asBoolean(false);
+                    
+                    if (success) {
+                        logger.info("✅ CREATE USER SUCCESS: User '{}' created successfully in OFBiz", username);
+                        return true;
+                    } else {
+                        String errorMessage = responseJson.path("errorMessage").asText(
+                            responseJson.path("_ERROR_MESSAGE_").asText("User creation failed"));
+                        logger.error("❌ CREATE USER FAILED: {}", errorMessage);
+                        return false;
+                    }
+                } catch (Exception jsonEx) {
+                    logger.error("❌ CREATE USER ERROR: Invalid JSON response: {}", response.body());
+                    return false;
+                }
+            } else {
+                logger.error("❌ CREATE USER FAILED: Request failed with status: {}, response: {}", 
+                           response.statusCode(), response.body().substring(0, Math.min(500, response.body().length())));
+                return false;
+            }
+            
+        } catch (Exception e) {
+            logger.error("💥 CREATE USER EXCEPTION: Error creating user '{}': {}", username, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Creates a new tenant/organization in OFBiz via REST API
+     * @param tenantId the tenant ID
+     * @param tenantName the tenant name/description
+     * @return true if tenant creation succeeded, false otherwise
+     */
+    public boolean createTenant(String tenantId, String tenantName) {
+        if (!enableTenantCreation) {
+            logger.debug("Tenant creation is disabled in configuration");
+            return false;
+        }
+        
+        if (this.authToken == null || this.authToken.isEmpty()) {
+            logger.warn("No authentication token available for tenant creation - authentication required first");
+            return false;
+        }
+        
+        logger.info("🏢 CREATE TENANT: Creating new tenant '{}' in OFBiz via REST API", tenantId);
+        
+        try {
+            String url = baseUrl + (createTenantEndpoint != null ? createTenantEndpoint : "/rest/services/createPartyGroup");
+            
+            // Prepare request body with tenant data
+            String requestBody = String.format(
+                "{\"partyId\": \"%s\", \"groupName\": \"%s\", \"description\": \"%s\", \"partyTypeId\": \"PARTY_GROUP\"}",
+                tenantId, tenantName, "Organization created via Keycloak integration"
+            );
+            
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofMillis(timeout))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + this.authToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+            
+            logger.debug("🏢 CREATE TENANT: Sending tenant creation request to: {}", maskUrl(url));
+            
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                try {
+                    JsonNode responseJson = objectMapper.readTree(response.body());
+                    boolean success = responseJson.path("success").asBoolean(false);
+                    
+                    if (success) {
+                        logger.info("✅ CREATE TENANT SUCCESS: Tenant '{}' created successfully in OFBiz", tenantId);
+                        return true;
+                    } else {
+                        String errorMessage = responseJson.path("errorMessage").asText(
+                            responseJson.path("_ERROR_MESSAGE_").asText("Tenant creation failed"));
+                        logger.error("❌ CREATE TENANT FAILED: {}", errorMessage);
+                        return false;
+                    }
+                } catch (Exception jsonEx) {
+                    logger.error("❌ CREATE TENANT ERROR: Invalid JSON response: {}", response.body());
+                    return false;
+                }
+            } else {
+                logger.error("❌ CREATE TENANT FAILED: Request failed with status: {}, response: {}", 
+                           response.statusCode(), response.body().substring(0, Math.min(500, response.body().length())));
+                return false;
+            }
+            
+        } catch (Exception e) {
+            logger.error("💥 CREATE TENANT EXCEPTION: Error creating tenant '{}': {}", tenantId, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Checks if user creation is enabled
+     * @return true if user creation is enabled
+     */
+    public boolean isUserCreationEnabled() {
+        return enableUserCreation;
+    }
+
+    /**
+     * Checks if tenant creation is enabled
+     * @return true if tenant creation is enabled
+     */
+    public boolean isTenantCreationEnabled() {
+        return enableTenantCreation;
     }
 
     /**

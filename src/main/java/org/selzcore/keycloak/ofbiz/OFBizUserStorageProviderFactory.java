@@ -36,6 +36,11 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
     public static final String CONFIG_KEY_OFBIZ_AUTH_ENDPOINT = "ofbizAuthEndpoint";
     public static final String CONFIG_KEY_OFBIZ_USER_ENDPOINT = "ofbizUserEndpoint";
     public static final String CONFIG_KEY_OFBIZ_TIMEOUT = "ofbizTimeout";
+    public static final String CONFIG_KEY_OFBIZ_CREATE_USER_ENDPOINT = "ofbizCreateUserEndpoint";
+    public static final String CONFIG_KEY_OFBIZ_CREATE_TENANT_ENDPOINT = "ofbizCreateTenantEndpoint";
+    public static final String CONFIG_KEY_ENABLE_USER_CREATION = "enableUserCreation";
+    public static final String CONFIG_KEY_ENABLE_TENANT_CREATION = "enableTenantCreation";
+    public static final String CONFIG_KEY_DEFAULT_USER_PASSWORD = "defaultUserPassword";
     
     // Integration mode constants
     public static final String INTEGRATION_MODE_DATABASE = "database";
@@ -167,6 +172,42 @@ public class OFBizUserStorageProviderFactory implements UserStorageProviderFacto
                     .helpText("Timeout for OFBiz REST API calls in milliseconds (REST mode)")
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .defaultValue("5000")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_ENABLE_USER_CREATION)
+                    .label("Enable User Creation")
+                    .helpText("Allow creating new users in OFBiz via REST API when they don't exist")
+                    .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                    .defaultValue("false")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_CREATE_USER_ENDPOINT)
+                    .label("OFBiz Create User Endpoint")
+                    .helpText("REST endpoint for creating new users in OFBiz (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/services/createUser")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_DEFAULT_USER_PASSWORD)
+                    .label("Default User Password")
+                    .helpText("Default password for newly created users (REST mode)")
+                    .type(ProviderConfigProperty.PASSWORD)
+                    .secret(true)
+                    .defaultValue("changeme123")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_ENABLE_TENANT_CREATION)
+                    .label("Enable Tenant Creation")
+                    .helpText("Allow creating new tenants/organizations in OFBiz via REST API")
+                    .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                    .defaultValue("false")
+                    .add()
+                .property()
+                    .name(CONFIG_KEY_OFBIZ_CREATE_TENANT_ENDPOINT)
+                    .label("OFBiz Create Tenant Endpoint")
+                    .helpText("REST endpoint for creating new tenants/organizations in OFBiz (REST mode)")
+                    .type(ProviderConfigProperty.STRING_TYPE)
+                    .defaultValue("/rest/services/createPartyGroup")
                     .add()
                 .property()
                     .name(CONFIG_KEY_JDBC_DRIVER)

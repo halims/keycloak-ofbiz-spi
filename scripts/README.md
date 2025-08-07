@@ -4,7 +4,7 @@ This directory contains test scripts to validate that external applications can 
 
 ## Test Scripts
 
-### 1. `test-ofbiz-login.sh` - Comprehensive Test
+### 1. `test-ofbiz-login.sh` - Comprehensive Login Test
 **Full-featured test script that demonstrates complete OIDC integration**
 
 ```bash
@@ -22,7 +22,7 @@ This directory contains test scripts to validate that external applications can 
 
 **Default credentials:** `admin` / `ofbiz`
 
-### 2. `quick-test.sh` - Simple Test
+### 2. `quick-test.sh` - Simple Login Test
 **Quick validation script for basic authentication**
 
 ```bash
@@ -43,6 +43,83 @@ This directory contains test scripts to validate that external applications can 
 # Test with custom credentials
 ./scripts/quick-test.sh myuser mypassword
 ```
+
+### 3. `test-user-creation.sh` - User Creation Test Suite
+**Comprehensive test for automatic user creation feature**
+
+```bash
+./scripts/test-user-creation.sh
+```
+
+**Features:**
+- ✅ Tests automatic user creation for non-existent users
+- ✅ Validates SPI configuration for user creation
+- ✅ Tests multiple user scenarios (email-based, simple usernames)
+- ✅ Interactive mode for custom testing
+- ✅ Detailed logging and error analysis
+- ✅ Configuration verification
+
+**Test Cases:**
+- Email format users (`john.doe@example.com`)
+- Simple usernames (`testuser`)
+- Complex email addresses (`mike.wilson@domain.org`)
+- Existing user validation
+
+### 4. `test-user-quick.sh` - Quick User Creation Test
+**Simple test for user creation functionality**
+
+```bash
+./scripts/test-user-quick.sh [username] [password]
+```
+
+**Features:**
+- ✅ Quick test of user creation for a specific user
+- ✅ Automatic username generation if not provided
+- ✅ Shows if user was auto-created vs existing
+- ✅ Simple pass/fail output
+
+**Examples:**
+```bash
+# Test with auto-generated username
+./scripts/test-user-quick.sh
+
+# Test specific new user
+./scripts/test-user-quick.sh newuser@example.com password123
+```
+
+### 5. `configure-user-creation.sh` - User Creation Setup
+**Configure OFBiz SPI for user creation testing**
+
+```bash
+./scripts/configure-user-creation.sh
+```
+
+**Features:**
+- ✅ Enables user creation in existing SPI configuration
+- ✅ Sets up create user endpoints
+- ✅ Configures default passwords and tenant settings
+- ✅ Enables detailed logging for debugging
+
+**Configuration Applied:**
+- `ofbizEnableUserCreation: true`
+- `ofbizCreateUserEndpoint: /rest/services/createUser`
+- `ofbizDefaultUserPassword: defaultPassword123`
+- `ofbizEnableTenantCreation: true`
+- `ofbizEnableDetailedLogging: true`
+
+### 6. `test-user-creation-complete.sh` - End-to-End Test
+**Complete test suite with mock OFBiz setup**
+
+```bash
+./scripts/test-user-creation-complete.sh
+```
+
+**Features:**
+- ✅ Starts mock OFBiz server automatically
+- ✅ Configures SPI for user creation
+- ✅ Runs comprehensive user creation tests
+- ✅ Cleans up resources after testing
+- ✅ Full end-to-end validation
 
 ## Prerequisites
 
@@ -91,6 +168,40 @@ This directory contains test scripts to validate that external applications can 
 # Test with different OFBiz user
 ./scripts/quick-test.sh flexadmin ofbiz
 ```
+
+### Scenario 4: User Creation Test (New Feature)
+```bash
+# Test automatic user creation
+./scripts/test-user-creation.sh
+```
+
+**Expected Results:**
+- ✅ SPI configuration verified
+- ✅ Non-existent users automatically created in OFBiz
+- ✅ Email-based usernames parsed correctly (john.doe@example.com → John Doe)
+- ✅ Simple usernames handled appropriately
+- ✅ Created users can authenticate immediately
+
+### Scenario 5: Quick User Creation Test
+```bash
+# Test specific new user creation
+./scripts/test-user-quick.sh newuser@example.com password123
+```
+
+**Expected Result:** ✅ User created and authenticated successfully
+
+### Scenario 6: Complete End-to-End Test
+```bash
+# Full test with mock OFBiz
+./scripts/test-user-creation-complete.sh
+```
+
+**Expected Results:**
+- ✅ Mock OFBiz server started
+- ✅ SPI configured for user creation
+- ✅ Multiple test cases executed
+- ✅ All users created successfully
+- ✅ Clean shutdown
 
 ## Understanding the Output
 

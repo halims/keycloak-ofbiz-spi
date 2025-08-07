@@ -6,6 +6,7 @@ This creates a simple HTTP server that mimics OFBiz REST endpoints
 
 import json
 import base64
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import hashlib
@@ -73,19 +74,149 @@ class MockOFBizHandler(BaseHTTPRequestHandler):
         """Handle CORS preflight requests"""
         self._send_response(200, {})
     
+    def do_GET(self):
+        """Handle GET requests"""
+        path = urlparse(self.path).path
+        
+        print(f"[MOCK] 📤 GET {path}")
+        
+        if path == '/users' or path == '/rest/users':
+            self._handle_list_users()
+        elif path == '/health' or path == '/rest/health':
+            self._send_response(200, {'status': 'OK', 'message': 'Mock OFBiz is running'})
+        else:
+            self._send_response(404, {
+                'error': 'Not Found',
+                'message': f'GET endpoint {path} not found'
+            })
+    
+    def _handle_list_users(self):
+        """List all users (for debugging)"""
+        users_data = []
+        for username, user in self.USERS.items():
+            user_copy = user.copy()
+            user_copy.pop('password', None)  # Don't expose passwords
+            users_data.append(user_copy)
+        
+        self._send_response(200, {
+            'success': True,
+            'total': len(users_data),
+            'users': users_data
+        })
+    
     def do_POST(self):
         """Handle POST requests"""
         path = urlparse(self.path).path
+        
+        print(f"[MOCK] 📥 POST {path}")
+        print(f"[MOCK] Headers: {dict(self.headers)}")
         
         if path == '/rest/auth/token':
             self._handle_auth_token()
         elif path == '/rest/services/getUserInfo':
             self._handle_get_user_info()
+        elif path == '/rest/services/createUser':
+            self._handle_create_user()
+        elif path == '/rest/services/createPartyGroup':
+            self._handle_create_tenant()
         else:
+            print(f"[MOCK] ❌ Unknown endpoint: {path}")
             self._send_response(404, {
                 'error': 'Not Found',
                 'message': f'Endpoint {path} not found'
             })
+    
+    def _handle_create_user(self):
+        """Handle user creation request"""
+        print(f"[MOCK] 🔨 USER CREATION REQUEST")
+        
+        post_data = self._get_post_data()
+        print(f"[MOCK] Request data: {json.dumps(post_data, indent=2)}")
+        
+        # Extract user data
+        username = post_data.get('userLoginId')
+        first_name = post_data.get('firstName')
+        last_name = post_data.get('lastName')
+        email = post_data.get('emailAddress')
+        password = post_data.get('userPassword', 'defaultPassword123')
+        tenant_id = post_data.get('tenantId', 'default')
+        
+        if not username:
+            print(f"[MOCK] ❌ Missing userLoginId")
+            self._send_response(400, {
+                'error': 'Bad Request',
+                'message': 'userLoginId is required'
+            })
+            return
+        
+        # Check if user already exists
+        if username in self.USERS:
+            print(f"[MOCK] ⚠️  User '{username}' already exists")
+            self._send_response(409, {
+                'error': 'Conflict',
+                'message': f'User {username} already exists'
+            })
+            return
+        
+        # Create the user
+        new_user = {
+            'password': password,
+            'userLoginId': username,
+            'firstName': first_name or username,
+            'lastName': last_name or 'User',
+            'email': email or f'{username}@example.com',
+            'tenantId': tenant_id,
+            'enabled': True,
+            'createdByKeycloak': True,
+            'createdAt': str(int(time.time() * 1000))  # Timestamp in milliseconds
+        }
+        
+        self.USERS[username] = new_user
+        
+        print(f"[MOCK] ✅ USER CREATED: {username}")
+        print(f"[MOCK] User details: {json.dumps(new_user, indent=2)}")
+        
+        self._send_response(201, {
+            'success': True,
+            'message': f'User {username} created successfully',
+            'data': {
+                'userLoginId': username,
+                'firstName': new_user['firstName'],
+                'lastName': new_user['lastName'],
+                'email': new_user['email'],
+                'tenantId': new_user['tenantId']
+            }
+        })
+    
+    def _handle_create_tenant(self):
+        """Handle tenant/organization creation request"""
+        print(f"[MOCK] 🏢 TENANT CREATION REQUEST")
+        
+        post_data = self._get_post_data()
+        print(f"[MOCK] Request data: {json.dumps(post_data, indent=2)}")
+        
+        tenant_id = post_data.get('partyId')
+        tenant_name = post_data.get('groupName')
+        
+        if not tenant_id:
+            print(f"[MOCK] ❌ Missing partyId")
+            self._send_response(400, {
+                'error': 'Bad Request',
+                'message': 'partyId is required'
+            })
+            return
+        
+        print(f"[MOCK] ✅ TENANT CREATED: {tenant_id} - {tenant_name}")
+        
+        self._send_response(201, {
+            'success': True,
+            'message': f'Tenant {tenant_id} created successfully',
+            'data': {
+                'partyId': tenant_id,
+                'groupName': tenant_name or f'{tenant_id} Organization',
+                'partyTypeId': 'PARTY_GROUP'
+            }
+        })
     
     def _handle_auth_token(self):
         """Handle authentication token request"""

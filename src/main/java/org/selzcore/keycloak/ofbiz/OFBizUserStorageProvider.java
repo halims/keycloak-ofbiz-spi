@@ -237,7 +237,15 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         userInfo.getCustomAttributes());
                 } else {
                     logger.warn("❌ REST USER NOT FOUND: User '{}' not found or disabled via REST API", username);
-                    return null;
+                    
+                    // Attempt to create user if user creation is enabled
+                    if (restClient.isUserCreationEnabled()) {
+                        logger.info("🔨 AUTO CREATE: Attempting to create missing user '{}' in OFBiz", username);
+                        return attemptUserCreation(realm, username);
+                    } else {
+                        logger.debug("User creation is disabled - returning null for missing user '{}'", username);
+                        return null;
+                    }
                 }
             } else {
                 logger.debug("🔍 REST USER LOOKUP: No cached token for user '{}'. Attempting to authenticate to fetch user details...", username);
@@ -825,6 +833,69 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         }
         
         return false;
+    }
+
+    /**
+     * Attempts to create a new user in OFBiz when user is not found
+     * @param realm the Keycloak realm
+     * @param username the username to create
+     * @return UserModel if creation succeeded, null otherwise
+     */
+    private UserModel attemptUserCreation(RealmModel realm, String username) {
+        logger.info("🔨 USER CREATION: Attempting to create missing user '{}' in OFBiz", username);
+        
+        try {
+            // Extract basic user information from username (if email format)
+            String firstName = username;
+            String lastName = "User";
+            String email = username;
+            String tenantId = "default";
+            
+            // If username looks like an email, extract name parts
+            if (username.contains("@")) {
+                String localPart = username.substring(0, username.indexOf("@"));
+                String[] nameParts = localPart.split("\\.");
+                if (nameParts.length >= 2) {
+                    firstName = nameParts[0].substring(0, 1).toUpperCase() + nameParts[0].substring(1);
+                    lastName = nameParts[1].substring(0, 1).toUpperCase() + nameParts[1].substring(1);
+                } else {
+                    firstName = localPart.substring(0, 1).toUpperCase() + localPart.substring(1);
+                }
+                email = username; // Use full email
+            } else {
+                // For non-email usernames, generate an email
+                email = username + "@example.com";
+                firstName = username.substring(0, 1).toUpperCase() + username.substring(1);
+            }
+            
+            // Attempt to create tenant first if tenant creation is enabled
+            if (restClient.isTenantCreationEnabled() && !"default".equals(tenantId)) {
+                logger.info("🏢 Creating tenant '{}' for new user '{}'", tenantId, username);
+                restClient.createTenant(tenantId, tenantId + " Organization");
+            }
+            
+            // Create the user in OFBiz
+            boolean userCreated = restClient.createUser(username, firstName, lastName, email, tenantId);
+            
+            if (userCreated) {
+                logger.info("✅ USER CREATED: Successfully created user '{}' in OFBiz", username);
+                
+                // Return a user adapter with the created user data
+                Map<String, String> customAttributes = new HashMap<>();
+                customAttributes.put("createdByKeycloak", "true");
+                customAttributes.put("createdAt", String.valueOf(System.currentTimeMillis()));
+                
+                return new OFBizUserAdapter(session, realm, model, 
+                    username, firstName, lastName, email, true, tenantId, customAttributes);
+            } else {
+                logger.error("❌ USER CREATION FAILED: Could not create user '{}' in OFBiz", username);
+                return null;
+            }
+            
+        } catch (Exception e) {
+            logger.error("💥 USER CREATION EXCEPTION: Error creating user '{}': {}", username, e.getMessage(), e);
+            return null;
+        }
     }
 
     /**
