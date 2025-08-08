@@ -1,27 +1,19 @@
 # Keycloak OFBiz SPI
 
-A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 with Apache OFBiz v24.09.01 as the backing user store. This allows other systems to use Keycloak as an OIDC provider while user data remains in the OFBiz system.
+A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 with Apache OFBiz v24.09.01 via REST API. This allows other systems to use Keycloak as an OIDC provider while user data remains in the OFBiz system.
 
 ## Features
 
-- **Dual Integration Modes**: Choose between direct database connection or REST API integration
-- **User Authentication**: Authenticate users against OFBiz database or via REST API
-- **Password Verification**: Support for OFBiz password hashing schemes (SHA-1 with salt)
-- **User Lookup**: Find users by username, email, or ID
-- **User Search**: Search and list users with pagination (database mode only)
+- **REST API Integration**: Secure integration with OFBiz via REST endpoints
+- **User Authentication**: Authenticate users against OFBiz via REST API
+- **Password Verification**: Support for OFBiz password hashing and validation
+- **User Lookup**: Find users by username or ID through REST API
+- **User Creation**: Create new users in OFBiz when they don't exist (optional)
+- **Secure Password Generation**: Automatic cryptographically secure random passwords for new users
 - **Tenant Support**: Multi-tenant user attributes and custom data mapping
-- **Connection Pooling**: Efficient database connection management with HikariCP
-- **Multi-Database Support**: Works with MySQL, PostgreSQL, and other JDBC databases
+- **JWT Token Management**: Secure token-based authentication with OFBiz
 - **Comprehensive Logging**: Detailed authentication and operational logging
 - **Configurable**: Easy configuration through Keycloak admin console
-
-## Integration Modes
-
-### Database Mode (Default)
-Direct connection to OFBiz database for high performance and full feature support.
-
-### REST Mode
-Integration via OFBiz REST API endpoints for distributed deployments and enhanced security.
 
 ## Architecture
 
@@ -32,15 +24,17 @@ Integration via OFBiz REST API endpoints for distributed deployments and enhance
                                              │
                                     Keycloak SPI
                                              │
-                                    ┌────────┴─────────┐
-                                    │                  │
-                              Database Mode      REST Mode
-                                    │                  │
-                                    ▼                  ▼
-                           ┌─────────────────┐ ┌─────────────────┐
-                           │  OFBiz Database │ │ OFBiz REST API  │
-                           │   (User Store)  │ │   (Web Service) │
-                           └─────────────────┘ └─────────────────┘
+                                             ▼
+                                 ┌─────────────────┐
+                                 │ OFBiz REST API  │
+                                 │   (Web Service) │
+                                 └─────────────────┘
+                                             │
+                                             ▼
+                                 ┌─────────────────┐
+                                 │   Apache OFBiz  │
+                                 │   (User Store)  │
+                                 └─────────────────┘
 ```
 
 ## Prerequisites
@@ -57,7 +51,7 @@ Integration via OFBiz REST API endpoints for distributed deployments and enhance
 mvn clean package
 ```
 
-This will create `target/keycloak-ofbiz-spi-0.0.4.jar`
+This will create `target/keycloak-ofbiz-spi-0.0.6.jar`
 
 ## Installation
 
@@ -65,7 +59,7 @@ This will create `target/keycloak-ofbiz-spi-0.0.4.jar`
 
 2. **Deploy to Keycloak**: Copy the JAR file to your Keycloak providers directory:
    ```bash
-   cp target/keycloak-ofbiz-spi-0.0.4.jar $KEYCLOAK_HOME/providers/
+   cp target/keycloak-ofbiz-spi-0.0.6.jar $KEYCLOAK_HOME/providers/
    ```
 
 3. **Restart Keycloak**: Restart your Keycloak server to load the new provider.
@@ -78,70 +72,39 @@ This will create `target/keycloak-ofbiz-spi-0.0.4.jar`
 
 ## Configuration
 
-The OFBiz User Storage Provider supports two integration modes:
+The OFBiz User Storage Provider integrates with OFBiz via REST API endpoints for secure, distributed deployments.
 
-### Database Mode (Recommended for performance)
-Direct connection to the OFBiz database using JDBC.
-
-### REST Mode (Recommended for security/distributed deployments)  
-Integration via OFBiz REST API endpoints.
-
-For detailed configuration instructions for both modes, see:
-- **[Integration Modes Guide](readme/INTEGRATION_MODES_GUIDE.md)** - Complete guide for both integration modes
+For detailed configuration instructions, see:
 - **[Configuration Guide](readme/CONFIGURATION_GUIDE.md)** - Basic configuration instructions
 - **[Runtime Realm Configuration](readme/RUNTIME_REALM_CONFIGURATION.md)** - Advanced realm-specific settings
 
 ### Quick Start Configuration
 
-#### Database Mode
-```
-Integration Mode: database
-Database URL: jdbc:postgresql://localhost:5432/ofbiz
-Database Username: ofbiz
-Database Password: ofbiz123
-Connection Pool Size: 5
-Enabled Realms: mycompany
-```
-
-#### REST Mode
-```
-Integration Mode: rest
-OFBiz Base URL: https://ofbiz.mycompany.com
-Auth Endpoint: /rest/auth/login
-User Endpoint: /rest/user/info
-API Key: your-api-key-here
-Timeout: 5000
-Enabled Realms: mycompany
-```
-
 Configure the following properties in Keycloak Admin Console:
+
+```
+OFBiz Base URL: http://ofbiz.local:8080
+Auth Endpoint: /rest/auth/token
+User Endpoint: /rest/services/getUserInfo
+Timeout: 5000
+Enabled Realms: ofbiz
+Enable User Creation: false
+Enable Tenant Creation: false
+```
+
+### Configuration Properties
 
 | Property | Description | Default |
 |----------|-------------|---------|
-| JDBC Driver Class | Database driver class name | `com.mysql.cj.jdbc.Driver` |
-| JDBC URL | Database connection URL | `jdbc:mysql://localhost:3306/ofbiz` |
-| Database Username | Database username | `ofbiz` |
-| Database Password | Database password | - |
-| Validation Query | SQL query to validate connections | `SELECT 1` |
-| Connection Pool Size | Maximum connections in pool | `10` |
-
-### Example Configuration
-
-**MySQL:**
-```
-JDBC Driver: com.mysql.cj.jdbc.Driver
-JDBC URL: jdbc:mysql://localhost:3306/ofbiz?useSSL=false&serverTimezone=UTC
-Username: ofbiz
-Password: your_password
-```
-
-**PostgreSQL:**
-```
-JDBC Driver: org.postgresql.Driver
-JDBC URL: jdbc:postgresql://localhost:5432/ofbiz
-Username: ofbiz
-Password: your_password
-```
+| OFBiz Base URL | Base URL of OFBiz instance | `http://ofbiz.local:8080` |
+| OFBiz Auth Endpoint | Authentication endpoint | `/rest/auth/token` |
+| OFBiz User Endpoint | User info endpoint | `/rest/services/getUserInfo` |
+| OFBiz Timeout | Request timeout in milliseconds | `5000` |
+| Enabled Realms | Comma-separated list of enabled realms | `ofbiz` |
+| Enable User Creation | Allow creating new users | `false` |
+| Enable Tenant Creation | Allow creating new tenants | `false` |
+| Service Account Username | OFBiz service account for user lookups | `admin` |
+| Service Account Password | OFBiz service account password | `ofbiz` |
 
 ## OFBiz Database Schema
 
@@ -237,6 +200,25 @@ Enable debug logging in Keycloak:
 4. Add tests for new functionality
 5. Ensure all tests pass
 6. Submit a pull request
+
+## Development Branches
+
+This project maintains two main development branches to support different integration approaches:
+
+### Main Branch (`main`)
+- **REST API Only**: Pure REST API integration with OFBiz
+- **Recommended for production**: More secure and scalable
+- **Stateless**: No direct database connections
+- **Version**: 0.0.6+
+- **Features**: User authentication, creation, and management via OFBiz REST endpoints
+
+### DB and REST Integration Branch (`feature/db-and-rest-integration`)
+- **Dual Mode**: Supports both direct database and REST API integration
+- **Legacy compatibility**: Maintains backward compatibility with database mode
+- **Version**: 0.0.6
+- **Features**: All REST features plus direct database connectivity option
+
+**Migration Path**: Start with the dual-mode branch for existing installations, then migrate to REST-only main branch for new deployments.
 
 ## License
 

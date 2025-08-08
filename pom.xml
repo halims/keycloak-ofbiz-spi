@@ -20,9 +20,6 @@
         <keycloak.version>26.2.5</keycloak.version>
         <slf4j.version>2.0.7</slf4j.version>
         <junit.version>5.9.3</junit.version>
-        <mysql.connector.version>8.0.33</mysql.connector.version>
-        <postgresql.version>42.6.0</postgresql.version>
-        <hikaricp.version>5.0.1</hikaricp.version>
     </properties>
 
     <dependencies>
@@ -56,25 +53,6 @@
             <artifactId>keycloak-model-storage</artifactId>
             <version>${keycloak.version}</version>
             <scope>provided</scope>
-        </dependency>
-
-        <!-- Database Drivers -->
-        <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
-            <version>${mysql.connector.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <version>${postgresql.version}</version>
-        </dependency>
-
-        <!-- Connection Pool -->
-        <dependency>
-            <groupId>com.zaxxer</groupId>
-            <artifactId>HikariCP</artifactId>
-            <version>${hikaricp.version}</version>
         </dependency>
 
         <!-- Logging -->

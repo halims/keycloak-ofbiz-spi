@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Base64;
+import java.security.SecureRandom;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -36,7 +37,8 @@ public class OFBizRestClient {
     private final String createTenantEndpoint;
     private final boolean enableUserCreation;
     private final boolean enableTenantCreation;
-    private final String defaultUserPassword;
+    private final String serviceAccountUsername;
+    private final String serviceAccountPassword;
     private final int timeout;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -49,7 +51,8 @@ public class OFBizRestClient {
         this.userEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_USER_ENDPOINT);
         this.createUserEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_CREATE_USER_ENDPOINT);
         this.createTenantEndpoint = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_OFBIZ_CREATE_TENANT_ENDPOINT);
-        this.defaultUserPassword = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_DEFAULT_USER_PASSWORD);
+        this.serviceAccountUsername = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_SERVICE_ACCOUNT_USERNAME);
+        this.serviceAccountPassword = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_SERVICE_ACCOUNT_PASSWORD);
         
         // Parse boolean configurations
         String enableUserCreationStr = model.get(OFBizUserStorageProviderFactory.CONFIG_KEY_ENABLE_USER_CREATION);
@@ -98,7 +101,7 @@ public class OFBizRestClient {
         
         try {
             // Try to connect to the REST endpoint
-            String testUrl = baseUrl + "/rest/"; // OFBiz REST endpoint
+            String testUrl = baseUrl + "/"; // OFBiz REST endpoint
             
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(testUrl))
@@ -144,8 +147,8 @@ public class OFBizRestClient {
         
         try {
             // Use OFBiz standard REST auth endpoint
-            String url = baseUrl + "/rest/auth/token";
-            
+            String url = baseUrl + authEndpoint;
+
             // Create Basic Authentication header
             String credentials = username + ":" + password;
             String encodedCredentials = Base64.getEncoder().encodeToString(credentials.getBytes());
@@ -221,16 +224,45 @@ public class OFBizRestClient {
     }
 
     /**
+     * Authenticates using service account credentials for user lookups
+     * @return true if service account authentication succeeded
+     */
+    private boolean authenticateServiceAccount() {
+        if (serviceAccountUsername == null || serviceAccountUsername.trim().isEmpty() ||
+            serviceAccountPassword == null || serviceAccountPassword.trim().isEmpty()) {
+            logger.debug("No service account credentials configured");
+            return false;
+        }
+        
+        logger.debug("Authenticating with service account: {}", serviceAccountUsername);
+        return authenticateUser(serviceAccountUsername, serviceAccountPassword);
+    }
+
+    /**
+     * Ensures we have a valid authentication token, using service account if needed
+     * @return true if we have a valid token
+     */
+    private boolean ensureAuthenticated() {
+        // If we already have a token, assume it's valid
+        if (this.authToken != null && !this.authToken.isEmpty()) {
+            return true;
+        }
+        
+        // Try to authenticate with service account
+        return authenticateServiceAccount();
+    }
+
+    /**
      * Retrieves user information and tenant data from OFBiz REST API
      * Uses the new getUserInfo service that returns data.email and data.tenantId
-     * Requires prior authentication to have a valid auth token
+     * Will authenticate with service account if no token is available
      */
     public OFBizUserInfo getUserInfo(String username) {
         logger.debug("Retrieving user info for '{}' via OFBiz REST API", username);
         
-        // Ensure we have an authentication token from prior authentication
-        if (this.authToken == null || this.authToken.isEmpty()) {
-            logger.warn("No authentication token available for user info lookup - authentication required first");
+        // Ensure we have an authentication token (try service account if needed)
+        if (!ensureAuthenticated()) {
+            logger.warn("No authentication token available for user info lookup - service account authentication failed");
             return null;
         }
         
@@ -360,8 +392,8 @@ public class OFBizRestClient {
     public OFBizUserInfo getUserInfoByEmail(String email) {
         logger.debug("Retrieving user info by email '{}' via OFBiz REST API", email);
         
-        if (this.authToken == null || this.authToken.isEmpty()) {
-            logger.debug("No auth token available, authentication required first");
+        if (!ensureAuthenticated()) {
+            logger.debug("No auth token available, service account authentication failed");
             return null;
         }
         
@@ -456,35 +488,76 @@ public class OFBizRestClient {
     }
 
     /**
+     * Generates a secure random password for new users
+     * @return a cryptographically secure random password
+     */
+    private String generateSecureRandomPassword() {
+        SecureRandom random = new SecureRandom();
+        
+        // Define character sets for password generation
+        String uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        String lowercase = "abcdefghijklmnopqrstuvwxyz";
+        String digits = "0123456789";
+        String specialChars = "!@#$%^&*-_=+";
+        String allChars = uppercase + lowercase + digits + specialChars;
+        
+        StringBuilder password = new StringBuilder(16);
+        
+        // Ensure at least one character from each set
+        password.append(uppercase.charAt(random.nextInt(uppercase.length())));
+        password.append(lowercase.charAt(random.nextInt(lowercase.length())));
+        password.append(digits.charAt(random.nextInt(digits.length())));
+        password.append(specialChars.charAt(random.nextInt(specialChars.length())));
+        
+        // Fill the rest with random characters from all sets
+        for (int i = 4; i < 16; i++) {
+            password.append(allChars.charAt(random.nextInt(allChars.length())));
+        }
+        
+        // Shuffle the password to randomize positions
+        for (int i = password.length() - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            char temp = password.charAt(i);
+            password.setCharAt(i, password.charAt(j));
+            password.setCharAt(j, temp);
+        }
+        
+        return password.toString();
+    }
+
+    /**
      * Creates a new user in OFBiz via REST API
      * @param username the username for the new user
      * @param firstName the first name
      * @param lastName the last name 
      * @param email the email address
      * @param tenantId the tenant/organization ID
-     * @return true if user creation succeeded, false otherwise
+     * @return the generated password if user creation succeeded, null otherwise
      */
-    public boolean createUser(String username, String firstName, String lastName, String email, String tenantId) {
+    public String createUser(String username, String firstName, String lastName, String email, String tenantId) {
         if (!enableUserCreation) {
             logger.debug("User creation is disabled in configuration");
-            return false;
+            return null;
         }
         
-        if (this.authToken == null || this.authToken.isEmpty()) {
-            logger.warn("No authentication token available for user creation - authentication required first");
-            return false;
+        if (!ensureAuthenticated()) {
+            logger.warn("No authentication token available for user creation - service account authentication failed");
+            return null;
         }
         
         logger.info("🔨 CREATE USER: Creating new user '{}' in OFBiz via REST API", username);
         
+        // Generate a secure random password for the new user
+        String generatedPassword = generateSecureRandomPassword();
+        
         try {
             String url = baseUrl + (createUserEndpoint != null ? createUserEndpoint : "/rest/services/createUser");
             
-            // Prepare request body with user data
+            // Prepare request body with user data and generated password
             String requestBody = String.format(
                 "{\"userLoginId\": \"%s\", \"firstName\": \"%s\", \"lastName\": \"%s\", \"email\": \"%s\", \"password\": \"%s\", \"tenantId\": \"%s\"}",
                 username, firstName, lastName, email, 
-                defaultUserPassword != null ? defaultUserPassword : "changeme123",
+                generatedPassword,
                 tenantId != null ? tenantId : "default"
             );
             
@@ -507,27 +580,31 @@ public class OFBizRestClient {
                     boolean success = responseJson.path("success").asBoolean(false);
                     
                     if (success) {
-                        logger.info("✅ CREATE USER SUCCESS: User '{}' created successfully in OFBiz", username);
-                        return true;
+                        logger.info("✅ CREATE USER SUCCESS: User '{}' created successfully in OFBiz with secure random password", username);
+                        logger.info("📧 IMPORTANT: User '{}' should be notified about account creation and prompted to change password", username);
+                        logger.debug("🔑 Generated password for user '{}' (length: {} chars)", username, generatedPassword.length());
+                        
+                        // Return the generated password so it can be communicated to the user
+                        return generatedPassword;
                     } else {
                         String errorMessage = responseJson.path("errorMessage").asText(
                             responseJson.path("_ERROR_MESSAGE_").asText("User creation failed"));
                         logger.error("❌ CREATE USER FAILED: {}", errorMessage);
-                        return false;
+                        return null;
                     }
                 } catch (Exception jsonEx) {
                     logger.error("❌ CREATE USER ERROR: Invalid JSON response: {}", response.body());
-                    return false;
+                    return null;
                 }
             } else {
                 logger.error("❌ CREATE USER FAILED: Request failed with status: {}, response: {}", 
                            response.statusCode(), response.body().substring(0, Math.min(500, response.body().length())));
-                return false;
+                return null;
             }
             
         } catch (Exception e) {
             logger.error("💥 CREATE USER EXCEPTION: Error creating user '{}': {}", username, e.getMessage(), e);
-            return false;
+            return null;
         }
     }
 
@@ -543,8 +620,8 @@ public class OFBizRestClient {
             return false;
         }
         
-        if (this.authToken == null || this.authToken.isEmpty()) {
-            logger.warn("No authentication token available for tenant creation - authentication required first");
+        if (!ensureAuthenticated()) {
+            logger.warn("No authentication token available for tenant creation - service account authentication failed");
             return false;
         }
         

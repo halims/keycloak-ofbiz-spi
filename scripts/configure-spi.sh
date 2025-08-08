@@ -50,16 +50,17 @@ if [ -n "$OFBIZ_COMPONENT_ID" ]; then
     echo "📋 Step 3: Update OFBiz SPI Configuration"
     echo "----------------------------------------"
     
-    # Update the configuration with proper test settings
+    # Update the configuration with REST-only settings (including service account)
     UPDATE_CONFIG='{
         "config": {
-            "integrationMode": ["rest"],
             "ofbizBaseUrl": ["http://host.docker.internal:8080"],
             "ofbizAuthEndpoint": ["/rest/auth/token"],
             "ofbizUserEndpoint": ["/rest/services/getUserInfo"],
             "ofbizTimeout": ["5000"],
             "enabledRealms": ["ofbiz"],
-            "tenantAttribute": ["tenant"]
+            "tenantAttribute": ["tenant"],
+            "serviceAccountUsername": ["admin"],
+            "serviceAccountPassword": ["ofbiz"]
         }
     }'
     
@@ -82,20 +83,21 @@ else
     echo "📋 Step 3: Create OFBiz SPI Configuration"
     echo "----------------------------------------"
     
-    # Create new component configuration
+    # Create new component configuration for REST-only mode (with service account)
     COMPONENT_CONFIG='{
         "name": "OFBiz Users",
         "providerId": "ofbiz-user-storage",
         "providerType": "org.keycloak.storage.UserStorageProvider",
         "parentId": "'$REALM_NAME'",
         "config": {
-            "integrationMode": ["rest"],
             "ofbizBaseUrl": ["http://host.docker.internal:8080"],
             "ofbizAuthEndpoint": ["/rest/auth/token"],
             "ofbizUserEndpoint": ["/rest/services/getUserInfo"],
             "ofbizTimeout": ["5000"],
             "enabledRealms": ["ofbiz"],
-            "tenantAttribute": ["tenant"]
+            "tenantAttribute": ["tenant"],
+            "serviceAccountUsername": ["admin"],
+            "serviceAccountPassword": ["ofbiz"]
         }
     }'
     
@@ -133,7 +135,7 @@ echo ""
 echo "📋 Summary"
 echo "=========="
 echo "✅ OFBiz SPI is configured in the '$REALM_NAME' realm"
-echo "✅ Integration mode: REST"
+echo "✅ Integration mode: REST-only (simplified architecture)"
 echo "✅ OFBiz URL: http://host.docker.internal:8080"
 echo ""
 echo "Next steps:"

@@ -1,7 +1,5 @@
 # Docker Compose for Keycloak OFBiz SPI Development with PostgreSQL
 # Keycloak runs on port 8090 to avoid conflict with OFBiz at 8080
-version: "3.8"
-
 services:
   # PostgreSQL database for OFBiz
   postgres:
@@ -28,8 +26,8 @@ services:
     image: bitnami/keycloak:26.3.2
     container_name: keycloak-dev
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: ofbiz
@@ -49,7 +47,7 @@ services:
     entrypoint: |
       sh -c "
         echo 'Copying SPI JAR to providers directory...'
-        cp /opt/bitnami/keycloak/providers-source/keycloak-ofbiz-spi-0.0.4.jar /opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar
+        cp /opt/bitnami/keycloak/providers-source/keycloak-ofbiz-spi-0.*.jar /opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar
         echo 'JAR copied successfully'
         ls -la /opt/bitnami/keycloak/providers/
         echo 'Building Keycloak with new provider...'

@@ -97,13 +97,13 @@ This directory contains test scripts to validate that external applications can 
 **Features:**
 - ✅ Enables user creation in existing SPI configuration
 - ✅ Sets up create user endpoints
-- ✅ Configures default passwords and tenant settings
+- ✅ Configures secure random password generation and tenant settings
 - ✅ Enables detailed logging for debugging
 
 **Configuration Applied:**
 - `ofbizEnableUserCreation: true`
 - `ofbizCreateUserEndpoint: /rest/services/createUser`
-- `ofbizDefaultUserPassword: defaultPassword123`
+- `enableUserCreation: true` (enables secure random password generation for new users)
 - `ofbizEnableTenantCreation: true`
 - `ofbizEnableDetailedLogging: true`
 
