@@ -127,6 +127,35 @@ public class OFBizUserAdapter extends AbstractUserAdapterFederatedStorage {
     }
 
     @Override
+    public Long getCreatedTimestamp() {
+        // For federated users, return a reasonable creation timestamp
+        // Use current time if not available from federated storage
+        List<String> createdTimestamps = getAttributeStream("createdTimestamp").toList();
+        if (createdTimestamps != null && !createdTimestamps.isEmpty()) {
+            try {
+                return Long.parseLong(createdTimestamps.get(0));
+            } catch (NumberFormatException e) {
+                logger.debug("Could not parse stored createdTimestamp for user '{}': {}", username, createdTimestamps.get(0));
+            }
+        }
+        
+        // Use a default timestamp (current time when user was first accessed)
+        // This prevents invalid date displays in the admin console
+        long defaultTimestamp = System.currentTimeMillis();
+        setSingleAttribute("createdTimestamp", String.valueOf(defaultTimestamp));
+        logger.debug("Set default createdTimestamp for user '{}': {}", username, defaultTimestamp);
+        return defaultTimestamp;
+    }
+
+    @Override
+    public void setCreatedTimestamp(Long timestamp) {
+        if (timestamp != null) {
+            setSingleAttribute("createdTimestamp", timestamp.toString());
+            logger.debug("Set createdTimestamp for user '{}': {}", username, timestamp);
+        }
+    }
+
+    @Override
     public String getId() {
         return StorageId.keycloakId(storageProviderModel, username);
     }

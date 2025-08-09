@@ -464,6 +464,98 @@ public class OFBizRestClient {
     }
 
     /**
+     * Search for users by username or email pattern
+     * Returns a list of users matching the search criteria
+     */
+    public java.util.List<OFBizUserInfo> searchUsers(String searchTerm, int maxResults) {
+        logger.debug("Searching users with term '{}', max results: {}", searchTerm, maxResults);
+        java.util.List<OFBizUserInfo> results = new java.util.ArrayList<>();
+        
+        if (!ensureAuthenticated()) {
+            logger.debug("No auth token available, service account authentication failed");
+            return results;
+        }
+        
+        try {
+            // Try to find user by exact username first
+            OFBizUserInfo exactMatch = getUserInfo(searchTerm);
+            if (exactMatch != null) {
+                results.add(exactMatch);
+                logger.debug("Found exact username match for '{}'", searchTerm);
+                return results;
+            }
+            
+            // Try to find user by email if searchTerm looks like email
+            if (searchTerm.contains("@")) {
+                OFBizUserInfo emailMatch = getUserInfoByEmail(searchTerm);
+                if (emailMatch != null) {
+                    results.add(emailMatch);
+                    logger.debug("Found email match for '{}'", searchTerm);
+                    return results;
+                }
+            }
+            
+            // If OFBiz has a search service, use it
+            // For now, we'll use the individual lookup methods
+            logger.debug("No exact matches found for search term '{}'", searchTerm);
+            
+        } catch (Exception e) {
+            logger.error("Error searching users for term '{}': {}", searchTerm, e.getMessage(), e);
+        }
+        
+        return results;
+    }
+
+    /**
+     * Get a list of users with pagination
+     * For REST-only mode, this returns recently authenticated users from cache
+     */
+    public java.util.List<OFBizUserInfo> getUsers(int firstResult, int maxResults) {
+        logger.debug("Getting users with pagination: firstResult={}, maxResults={}", firstResult, maxResults);
+        java.util.List<OFBizUserInfo> results = new java.util.ArrayList<>();
+        
+        // In REST-only mode, we can't list all users for security reasons
+        // This method would need specific OFBiz services to list users
+        logger.debug("User listing not supported in REST-only mode for security reasons");
+        
+        return results;
+    }
+
+    /**
+     * Parse user info from JSON response
+     */
+    private OFBizUserInfo parseUserInfoFromJson(JsonNode userNode) {
+        try {
+            String username = userNode.has("username") ? userNode.get("username").asText() : null;
+            String firstName = userNode.has("firstName") ? userNode.get("firstName").asText() : "";
+            String lastName = userNode.has("lastName") ? userNode.get("lastName").asText() : "";
+            String email = userNode.has("email") ? userNode.get("email").asText() : null;
+            boolean enabled = userNode.has("enabled") ? userNode.get("enabled").asBoolean(true) : true;
+            String tenant = userNode.has("tenantId") ? userNode.get("tenantId").asText() : "default";
+            
+            if (username == null || username.trim().isEmpty()) {
+                logger.warn("Skipping user with null or empty username in JSON: {}", userNode);
+                return null;
+            }
+            
+            OFBizUserInfo userInfo = new OFBizUserInfo(username, firstName, lastName, email, enabled, tenant);
+            
+            // Add any custom attributes
+            if (userNode.has("customAttributes") && userNode.get("customAttributes").isObject()) {
+                JsonNode customAttrs = userNode.get("customAttributes");
+                customAttrs.fieldNames().forEachRemaining(fieldName -> {
+                    userInfo.addCustomAttribute(fieldName, customAttrs.get(fieldName).asText());
+                });
+            }
+            
+            return userInfo;
+        } catch (Exception e) {
+            logger.error("Error parsing user info from JSON: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
      * Closes the HTTP client
      */
     public void close() {

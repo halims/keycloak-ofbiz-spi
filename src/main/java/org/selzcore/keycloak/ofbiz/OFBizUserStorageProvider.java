@@ -138,6 +138,42 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
         }
     }
 
+    /**
+     * LOGOUT FIX: Clears user session data on logout
+     * This method should be called when a user logs out to clear cached tokens and user data
+     */
+    public static void clearUserSession(String username, String realmId) {
+        logger.info("🚪 LOGOUT CLEANUP: Clearing session data for user '{}' in realm '{}'", username, realmId);
+        
+        // Clear cached OFBiz token
+        clearCachedOFBizToken(username, realmId);
+        
+        // Clear cached user data
+        String userCacheKey = realmId + ":" + username;
+        CachedUserData removedUserData = cachedUserData.remove(userCacheKey);
+        if (removedUserData != null) {
+            logger.debug("🗑️  LOGOUT CLEANUP: Removed cached user data for '{}'", username);
+        }
+        
+        logger.info("✅ LOGOUT CLEANUP: Session data cleared for user '{}' - next login will require fresh authentication", username);
+    }
+
+    /**
+     * LOGOUT FIX: Clear all session data for a realm
+     * Useful for testing or admin operations
+     */
+    public static void clearAllSessionsForRealm(String realmId) {
+        logger.info("🚪 LOGOUT CLEANUP: Clearing all session data for realm '{}'", realmId);
+        
+        // Clear all tokens for this realm
+        tokenCache.entrySet().removeIf(entry -> entry.getKey().startsWith(realmId + ":"));
+        
+        // Clear all user data for this realm
+        cachedUserData.entrySet().removeIf(entry -> entry.getKey().startsWith(realmId + ":"));
+        
+        logger.info("✅ LOGOUT CLEANUP: All session data cleared for realm '{}'", realmId);
+    }
+
     @Override
     public UserModel getUserById(RealmModel realm, String id) {
         logger.debug("Getting user by ID: {}", id);
@@ -214,60 +250,51 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                         userInfo.getTenant(),
                         userInfo.getCustomAttributes());
                 } else {
-                    logger.warn("❌ REST USER NOT FOUND: User '{}' not found or disabled via REST API", username);
-                    
-                    // Attempt to create user if user creation is enabled
-                    if (restClient.isUserCreationEnabled()) {
-                        logger.info("🔨 AUTO CREATE: Attempting to create missing user '{}' in OFBiz", username);
-                        return attemptUserCreation(realm, username);
-                    } else {
-                        logger.debug("User creation is disabled - returning null for missing user '{}'", username);
-                        return null;
-                    }
+                    logger.debug("❌ REST USER NOT FOUND: User '{}' not found or disabled via REST API (even with cached token)", username);
+                    // Token might be invalid, clear it and fall through to temporary user creation
+                    clearCachedOFBizToken(username, realm.getId());
                 }
-            } else {
-                logger.debug("🔍 REST USER LOOKUP: No cached token for user '{}'. Attempting to authenticate to fetch user details...", username);
-                
-                // CRITICAL FIX: Try to authenticate with a dummy password to get token, then fetch user details
-                // This handles the case where getUserByUsername is called before user has authenticated
-                // but we still need to provide complete user details to prevent the update prompt
-                
-                // For now, return a user that will trigger proper authentication flow
-                // but with enough details to prevent blank update form
-                logger.info("🏗️ Creating temporary user profile for '{}' - details will be updated after authentication", username);
-                logger.warn("⚠️  TEMPORARY DATA: Using placeholder values for user '{}' because authentication is required first", username);
-                logger.warn("   • firstName: Will use capitalized username as placeholder");
-                logger.warn("   • lastName: Will use 'User' as placeholder");
-                logger.warn("   • email: Will use '{}@example.com' as placeholder", username);
-                logger.warn("   • tenantId: Will use 'default' as placeholder");
-                logger.warn("💡 AFTER AUTHENTICATION: Profile will be updated with real data from OFBiz");
-                
-                // Provide reasonable defaults that will be updated after authentication
-                String tempEmail = username.contains("@") ? username : username + "@example.com";
-                
-                // Create temporary user info and cache it briefly
-                OFBizRestClient.OFBizUserInfo tempUserInfo = new OFBizRestClient.OFBizUserInfo(
-                    username, 
-                    username.substring(0, 1).toUpperCase() + username.substring(1), 
-                    "User", 
-                    tempEmail, 
-                    true, 
-                    "default"
-                );
-                
-                cachedUserData.put(cacheKey, new CachedUserData(tempUserInfo));
-                logger.debug("💾 CACHE STORE: Cached temporary user data for '{}' in realm '{}'", username, realm.getName());
-                
-                return new OFBizUserAdapter(session, realm, model, 
-                    username,                           // username
-                    username.substring(0, 1).toUpperCase() + username.substring(1), // firstName - capitalized username
-                    "User",                            // lastName - generic default
-                    tempEmail,                         // email - provide a temporary email to prevent null
-                    true,                              // enabled
-                    "default",                         // tenant
-                    new HashMap<>()                    // customAttributes
-                );
             }
+            
+            // NO CACHED TOKEN OR TOKEN INVALID: Create temporary user for authentication flow
+            logger.debug("🔍 REST USER LOOKUP: No valid cached token for user '{}'. Creating temporary user for authentication flow", username);
+            
+            // LOGOUT FIX: Always provide a temporary user when no cached token is available
+            // This ensures that after logout, users can still be looked up and authenticated
+            logger.info("🏗️ Creating temporary user profile for '{}' - details will be updated after authentication", username);
+            logger.warn("⚠️  TEMPORARY DATA: Using placeholder values for user '{}' because authentication is required first", username);
+            logger.warn("   • firstName: Will use capitalized username as placeholder");
+            logger.warn("   • lastName: Will use 'User' as placeholder");
+            logger.warn("   • email: Will use '{}@example.com' as placeholder", username);
+            logger.warn("   • tenantId: Will use 'default' as placeholder");
+            logger.warn("💡 AFTER AUTHENTICATION: Profile will be updated with real data from OFBiz");
+            
+            // Provide reasonable defaults that will be updated after authentication
+            String tempEmail = username.contains("@") ? username : username + "@example.com";
+            
+            // Create temporary user info and cache it briefly (shorter TTL for temporary users)
+            OFBizRestClient.OFBizUserInfo tempUserInfo = new OFBizRestClient.OFBizUserInfo(
+                username, 
+                username.substring(0, 1).toUpperCase() + username.substring(1), 
+                "User", 
+                tempEmail, 
+                true, 
+                "default"
+            );
+            
+            // Cache temporarily - this will be replaced with real data after authentication
+            cachedUserData.put(cacheKey, new CachedUserData(tempUserInfo)); 
+            logger.debug("💾 CACHE STORE: Cached temporary user data for '{}' in realm '{}' (will be replaced after auth)", username, realm.getName());
+            
+            return new OFBizUserAdapter(session, realm, model, 
+                username,                           // username
+                username.substring(0, 1).toUpperCase() + username.substring(1), // firstName - capitalized username
+                "User",                            // lastName - generic default
+                tempEmail,                         // email - provide a temporary email to prevent null
+                true,                              // enabled
+                "default",                         // tenant
+                new HashMap<>()                    // customAttributes
+            );
         } catch (Exception e) {
             logger.error("Error fetching user details for '{}' via REST API: {}", username, e.getMessage(), e);
             
@@ -337,9 +364,17 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
     public int getUsersCount(RealmModel realm) {
         logger.debug("Getting users count for realm: {} using REST mode", realm.getName());
         
-        // REST mode doesn't typically support user counts for security reasons
-        logger.debug("User count not supported in REST mode, returning 0");
-        return 0;
+        // Check if this provider should be active for this realm
+        if (!isActiveForRealm(realm)) {
+            logger.debug("OFBiz provider not active for realm: {}, returning 0 count", realm.getName());
+            return 0;
+        }
+        
+        // For REST mode, we return a positive number to indicate users exist
+        // This tells Keycloak admin console that this provider has users
+        // The actual count is not critical for federated storage providers
+        logger.debug("✅ REST USER COUNT: Returning estimated count for security (actual count via search)");
+        return Integer.MAX_VALUE; // Indicates "many users exist, use search to find them"
     }
 
     @Override
@@ -354,9 +389,225 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
             return Stream.empty();
         }
         
-        // REST mode doesn't typically support user search for security reasons
-        logger.debug("User search not supported in REST mode, returning empty stream");
-        return Stream.empty();
+        try {
+            String searchTerm = params.get(UserModel.SEARCH);
+            String usernameParam = params.get(UserModel.USERNAME);
+            String emailParam = params.get(UserModel.EMAIL);
+            String firstNameParam = params.get(UserModel.FIRST_NAME);
+            String lastNameParam = params.get(UserModel.LAST_NAME);
+            
+            // Determine what to search for
+            String actualSearchTerm = null;
+            if (searchTerm != null && !searchTerm.trim().isEmpty()) {
+                actualSearchTerm = searchTerm.trim();
+            } else if (usernameParam != null && !usernameParam.trim().isEmpty()) {
+                actualSearchTerm = usernameParam.trim();
+            } else if (emailParam != null && !emailParam.trim().isEmpty()) {
+                actualSearchTerm = emailParam.trim();
+            } else if (firstNameParam != null && !firstNameParam.trim().isEmpty()) {
+                actualSearchTerm = firstNameParam.trim();
+            } else if (lastNameParam != null && !lastNameParam.trim().isEmpty()) {
+                actualSearchTerm = lastNameParam.trim();
+            }
+            
+            List<UserModel> users = new ArrayList<>();
+            
+            if (actualSearchTerm != null) {
+                logger.debug("🔍 REST USER SEARCH: Searching for users with term '{}' in OFBiz", actualSearchTerm);
+                
+                // Search by username first
+                try {
+                    UserModel user = getUserByUsername(realm, actualSearchTerm);
+                    if (user != null) {
+                        // Check for duplicates: don't add if email == username
+                        if (!isDuplicateUser(users, user)) {
+                            users.add(user);
+                            logger.debug("✅ Found user by username: {}", actualSearchTerm);
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.debug("No user found by username '{}': {}", actualSearchTerm, e.getMessage());
+                }
+                
+                // Search by email if not found by username and looks like email
+                if (users.isEmpty() && actualSearchTerm.contains("@")) {
+                    try {
+                        UserModel user = getUserByEmail(realm, actualSearchTerm);
+                        if (user != null) {
+                            // Check for duplicates: don't add if this user is already in results
+                            if (!isDuplicateUser(users, user)) {
+                                users.add(user);
+                                logger.debug("✅ Found user by email: {}", actualSearchTerm);
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.debug("No user found by email '{}': {}", actualSearchTerm, e.getMessage());
+                    }
+                }
+                
+                // Use REST client search for broader results
+                try {
+                    int maxResults_safe = maxResults != null ? Math.min(maxResults, 100) : 20;
+                    java.util.List<OFBizRestClient.OFBizUserInfo> searchResults = restClient.searchUsers(actualSearchTerm, maxResults_safe);
+                    
+                    for (OFBizRestClient.OFBizUserInfo userInfo : searchResults) {
+                        try {
+                            UserModel user = new OFBizUserAdapter(session, realm, model, 
+                                userInfo.getUsername(),
+                                userInfo.getFirstName(),
+                                userInfo.getLastName(), 
+                                userInfo.getEmail(),
+                                userInfo.isEnabled(),
+                                userInfo.getTenant(),
+                                userInfo.getCustomAttributes());
+                            
+                            // Check for duplicates before adding
+                            if (!isDuplicateUser(users, user)) {
+                                users.add(user);
+                                logger.debug("✅ Added user from search: {}", userInfo.getUsername());
+                            } else {
+                                logger.debug("⚠️ Skipped duplicate user: {}", userInfo.getUsername());
+                            }
+                        } catch (Exception e) {
+                            logger.warn("Error creating user adapter for '{}': {}", userInfo.getUsername(), e.getMessage());
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.debug("REST search failed: {}", e.getMessage());
+                }
+                
+                // If we have search results, apply pagination
+                if (!users.isEmpty()) {
+                    int start = firstResult != null ? firstResult : 0;
+                    int max = maxResults != null ? maxResults : users.size();
+                    int end = Math.min(start + max, users.size());
+                    
+                    if (start < users.size()) {
+                        List<UserModel> paginatedUsers = users.subList(start, end);
+                        logger.debug("✅ Returning {} paginated users for search term '{}'", paginatedUsers.size(), actualSearchTerm);
+                        return paginatedUsers.stream();
+                    }
+                }
+                
+                logger.debug("❌ REST USER SEARCH: No users found for search term '{}'", actualSearchTerm);
+            } else {
+                logger.debug("🔍 REST USER SEARCH: No search term provided - this is likely 'View all users' request");
+                
+                // For "View all users", we need to return some users
+                // Since we can't fetch all users from OFBiz via REST, we'll return cached users
+                List<UserModel> cachedUsers = getCachedUsers(realm, firstResult, maxResults);
+                if (!cachedUsers.isEmpty()) {
+                    logger.debug("✅ Returning {} cached users for 'View all users' request", cachedUsers.size());
+                    return cachedUsers.stream();
+                } else {
+                    logger.debug("⚠️  No cached users available for 'View all users' - users will appear after they authenticate");
+                    // Return empty stream with informative logging
+                    logger.info("💡 ADMIN CONSOLE TIP: Users will appear in the list after they authenticate at least once");
+                    logger.info("   Or use the search function to find specific users by username or email");
+                }
+            }
+            
+            return Stream.empty();
+            
+        } catch (Exception e) {
+            logger.error("💥 REST USER SEARCH ERROR: Error searching for users: {}", e.getMessage(), e);
+            return Stream.empty();
+        }
+    }
+
+    /**
+     * Check if a user is already in the list to prevent duplicates
+     * This handles cases where email is used as username
+     */
+    private boolean isDuplicateUser(List<UserModel> users, UserModel newUser) {
+        for (UserModel existingUser : users) {
+            // Check for exact username match
+            if (existingUser.getUsername().equals(newUser.getUsername())) {
+                return true;
+            }
+            
+            // Check for email-username conflicts (when email is used as username)
+            if (existingUser.getEmail() != null && newUser.getEmail() != null) {
+                // If existing user's username is the same as new user's email, it's a duplicate
+                if (existingUser.getUsername().equals(newUser.getEmail())) {
+                    return true;
+                }
+                // If existing user's email is the same as new user's username, it's a duplicate
+                if (existingUser.getEmail().equals(newUser.getUsername())) {
+                    return true;
+                }
+                // If both emails are the same, it's a duplicate
+                if (existingUser.getEmail().equals(newUser.getEmail())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Gets cached users for "View all users" functionality
+     * Returns users that have been cached from previous authentications
+     * Only returns users that have valid authentication tokens (no temporary/placeholder users)
+     */
+    private List<UserModel> getCachedUsers(RealmModel realm, Integer firstResult, Integer maxResults) {
+        List<UserModel> users = new ArrayList<>();
+        String realmId = realm.getId();
+        
+        try {
+            // Get users from the cached user data, but only include users that have authentication tokens
+            for (Map.Entry<String, CachedUserData> entry : cachedUserData.entrySet()) {
+                String cacheKey = entry.getKey();
+                CachedUserData cachedData = entry.getValue();
+                
+                // Check if this cache entry belongs to the current realm and is not expired
+                if (cacheKey.startsWith(realmId + ":") && !cachedData.isExpired()) {
+                    OFBizRestClient.OFBizUserInfo userInfo = cachedData.getUserInfo();
+                    String username = userInfo.getUsername();
+                    
+                    // CRITICAL FIX: Only include users that have valid authentication tokens
+                    // This prevents temporary/placeholder users from appearing in listings
+                    String cachedToken = getCachedOFBizToken(username, realmId);
+                    if (cachedToken != null) {
+                        logger.debug("✅ Including authenticated user '{}' in user listing", username);
+                        
+                        UserModel user = new OFBizUserAdapter(session, realm, model, 
+                            userInfo.getUsername(),
+                            userInfo.getFirstName(),
+                            userInfo.getLastName(), 
+                            userInfo.getEmail(),
+                            userInfo.isEnabled(),
+                            userInfo.getTenant(),
+                            userInfo.getCustomAttributes());
+                        
+                        // Check for duplicates before adding
+                        if (!isDuplicateUser(users, user)) {
+                            users.add(user);
+                        }
+                    } else {
+                        logger.debug("🚫 Skipping user '{}' - no valid authentication token (temporary/placeholder user)", username);
+                    }
+                }
+            }
+            
+            // Sort by username for consistent ordering
+            users.sort((u1, u2) -> u1.getUsername().compareToIgnoreCase(u2.getUsername()));
+            
+            // Apply pagination
+            int start = firstResult != null ? firstResult : 0;
+            int max = maxResults != null ? maxResults : 20; // Default to 20 users if no limit specified
+            int end = Math.min(start + max, users.size());
+            
+            if (start < users.size()) {
+                return users.subList(start, end);
+            } else {
+                return new ArrayList<>();
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error getting cached users: {}", e.getMessage(), e);
+            return new ArrayList<>();
+        }
     }
 
     @Override
@@ -495,9 +746,24 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
 
     /**
      * Validates user password via REST API
+     * LOGOUT FIX: Always validates credentials, never relies on cached tokens during authentication
      */
     private boolean validatePasswordViaRest(String username, String password) {
         logger.info("🔐 REST AUTH: Starting password validation for user '{}' via OFBiz REST API", username);
+        
+        // LOGOUT FIX: Clear any existing cached tokens ONLY during credential validation
+        // This ensures that logout properly invalidates cached credentials for authentication
+        // but allows user lookup operations to still use cached data
+        String realmId = session.getContext().getRealm().getId();
+        String tokenCacheKey = realmId + ":" + username;
+        OFBizTokenInfo existingToken = tokenCache.get(tokenCacheKey);
+        
+        if (existingToken != null) {
+            logger.debug("🧹 LOGOUT FIX: Found existing cached token for user '{}' - clearing before fresh authentication", username);
+            clearCachedOFBizToken(username, realmId);
+        } else {
+            logger.debug("🔍 CREDENTIAL VALIDATION: No existing cached token for user '{}' - proceeding with fresh authentication", username);
+        }
         
         try {
             boolean isValid = restClient.authenticateUser(username, password);
@@ -527,12 +793,19 @@ public class OFBizUserStorageProvider implements UserStorageProvider,
                 logger.error("   3. User account disabled in OFBiz");
                 logger.error("   4. OFBiz getUserInfo service not returning complete user data");
                 logger.error("💡 TROUBLESHOOT: Check OFBiz logs and verify user '{}' profile completeness", username);
+                
+                // LOGOUT FIX: Ensure no cached data remains for failed authentication
+                clearUserSession(username, realmId);
             }
             
             return isValid;
         } catch (Exception e) {
             logger.error("💥 REST AUTH ERROR: Exception during password validation for user '{}' via REST API: {}", 
                         username, e.getMessage(), e);
+            
+            // LOGOUT FIX: Clear any cached data on authentication error
+            clearUserSession(username, realmId);
+            
             return false;
         }
     }
