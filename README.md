@@ -51,7 +51,7 @@ A Keycloak Service Provider Interface (SPI) that integrates Keycloak v26.3.2 wit
 mvn clean package
 ```
 
-This will create `target/keycloak-ofbiz-spi-0.0.6.jar`
+This will create `target/keycloak-ofbiz-spi-0.0.7.jar`
 
 ## Installation
 
@@ -59,7 +59,7 @@ This will create `target/keycloak-ofbiz-spi-0.0.6.jar`
 
 2. **Deploy to Keycloak**: Copy the JAR file to your Keycloak providers directory:
    ```bash
-   cp target/keycloak-ofbiz-spi-0.0.6.jar $KEYCLOAK_HOME/providers/
+   cp target/keycloak-ofbiz-spi-0.0.7.jar $KEYCLOAK_HOME/providers/
    ```
 
 3. **Restart Keycloak**: Restart your Keycloak server to load the new provider.
@@ -209,13 +209,13 @@ This project maintains two main development branches to support different integr
 - **REST API Only**: Pure REST API integration with OFBiz
 - **Recommended for production**: More secure and scalable
 - **Stateless**: No direct database connections
-- **Version**: 0.0.6+
+- **Version**: 0.0.7+
 - **Features**: User authentication, creation, and management via OFBiz REST endpoints
 
 ### DB and REST Integration Branch (`feature/db-and-rest-integration`)
 - **Dual Mode**: Supports both direct database and REST API integration
 - **Legacy compatibility**: Maintains backward compatibility with database mode
-- **Version**: 0.0.6
+- **Version**: 0.0.7
 - **Features**: All REST features plus direct database connectivity option
 
 **Migration Path**: Start with the dual-mode branch for existing installations, then migrate to REST-only main branch for new deployments.

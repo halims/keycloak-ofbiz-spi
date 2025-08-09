@@ -1,0 +1,31 @@
+# Dockerfile for React SPA with HTTPS support
+FROM node:18-alpine
+
+# Install serve globally for HTTPS serving
+RUN npm install -g serve
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY src/ ./src/
+COPY public/ ./public/
+
+# Copy SSL certificates
+COPY ../docker/ssl/spa.crt /app/ssl/
+COPY ../docker/ssl/spa.key /app/ssl/
+
+# Build the application
+RUN npm run build
+
+# Expose HTTPS port
+EXPOSE 3443
+
+# Serve the built application with HTTPS
+CMD ["serve", "-s", "build", "-l", "3443", "--ssl-cert", "/app/ssl/spa.crt", "--ssl-key", "/app/ssl/spa.key"]

@@ -1,0 +1,135 @@
+# Docker Compose for HTTPS Development Environment with SPA
+# Includes PostgreSQL, Keycloak with HTTPS, and React SPA for complete testing
+version: "3.8"
+
+services:
+  # PostgreSQL database for OFBiz
+  postgres:
+    image: postgres:15
+    container_name: ofbiz-postgres
+    environment:
+      POSTGRES_ROOT_PASSWORD: root
+      POSTGRES_DB: ofbiz
+      POSTGRES_USER: ofbiz
+      POSTGRES_PASSWORD: ofbiz
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ofbiz -d ofbiz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Keycloak server with HTTPS
+  keycloak:
+    image: bitnami/keycloak:26.3.2
+    container_name: keycloak-dev-https
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ofbiz
+      KC_DB_PASSWORD: ofbiz
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      # HTTPS Configuration
+      KC_HTTPS_CERTIFICATE_FILE: /opt/bitnami/keycloak/conf/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/bitnami/keycloak/conf/keycloak.key
+      KC_HTTPS_PORT: 8443
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8080
+    ports:
+      - "8090:8080"   # HTTP (for admin access if needed)
+      - "8444:8443"   # HTTPS (primary)
+    volumes:
+      - ./target:/opt/bitnami/keycloak/providers-source:ro
+      - keycloak_providers:/opt/bitnami/keycloak/providers
+      - ./docker/ssl/keycloak.crt:/opt/bitnami/keycloak/conf/keycloak.crt:ro
+      - ./docker/ssl/keycloak.key:/opt/bitnami/keycloak/conf/keycloak.key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "ofbiz.local:host-gateway"
+    entrypoint: |
+      sh -c "
+        echo 'Copying SPI JAR to providers directory...'
+        [ -f "/opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar" ] || cp /opt/bitnami/keycloak/providers-source/keycloak-ofbiz-spi-0.*.jar /opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar
+        echo 'JAR copied successfully'
+        ls -la /opt/bitnami/keycloak/providers/
+        echo 'SSL Certificate info:'
+        ls -la /opt/bitnami/keycloak/conf/keycloak.*
+        echo 'Building Keycloak with new provider...'
+        /opt/bitnami/keycloak/bin/kc.sh build
+        echo 'Starting Keycloak with HTTPS...'
+        /opt/bitnami/keycloak/bin/kc.sh start-dev --https-certificate-file=/opt/bitnami/keycloak/conf/keycloak.crt --https-certificate-key-file=/opt/bitnami/keycloak/conf/keycloak.key
+      "
+
+  # React SPA development server (HTTP internally)
+  spa-dev:
+    build:
+      context: ./spa-test
+      dockerfile: Dockerfile.dev
+    container_name: ofbiz-spa-dev
+    volumes:
+      - ./spa-test/src:/app/src
+      - ./spa-test/public:/app/public
+      - ./spa-test/.env:/app/.env:ro
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - DANGEROUSLY_DISABLE_HOST_CHECK=true
+      - HOST=0.0.0.0
+      - PORT=3000
+      - REACT_APP_KEYCLOAK_URL=https://keycloak.local:8444/
+      - REACT_APP_KEYCLOAK_REALM=ofbiz
+      - REACT_APP_KEYCLOAK_CLIENT_ID=ofbiz-spa-test
+      # Disable WebSocket completely for HTTPS environment
+      - FAST_REFRESH=false
+      - GENERATE_SOURCEMAP=false
+      - WDS_SOCKET_PROTOCOL=wss
+      - WDS_SOCKET_HOST=spa.local
+      - WDS_SOCKET_PORT=3443
+    depends_on:
+      - keycloak
+    stdin_open: true
+    tty: true
+    extra_hosts:
+      - "keycloak.local:host-gateway"
+      - "ofbiz.local:host-gateway"
+
+  # NGINX HTTPS proxy for SPA
+  spa-https:
+    build:
+      context: ./spa-test
+      dockerfile: Dockerfile.nginx
+    container_name: ofbiz-spa-https
+    ports:
+      - "3443:443"   # HTTPS SPA
+    volumes:
+      - ./docker/ssl/spa.crt:/etc/nginx/ssl/spa.crt:ro
+      - ./docker/ssl/spa.key:/etc/nginx/ssl/spa.key:ro
+      # Mount production build instead of proxying to dev server
+      - ./spa-test/build:/usr/share/nginx/html:ro
+    # Remove dependency on spa-dev to serve static files
+    extra_hosts:
+      - "spa.local:host-gateway"
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8091:80"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  keycloak_providers:

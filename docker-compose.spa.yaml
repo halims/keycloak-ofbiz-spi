@@ -1,0 +1,103 @@
+# Docker Compose for Full Development Environment with SPA
+# Includes PostgreSQL, Keycloak, and React SPA for complete testing
+version: "3.8"
+
+services:
+  # PostgreSQL database for OFBiz
+  postgres:
+    image: postgres:15
+    container_name: ofbiz-postgres
+    environment:
+      POSTGRES_ROOT_PASSWORD: root
+      POSTGRES_DB: ofbiz
+      POSTGRES_USER: ofbiz
+      POSTGRES_PASSWORD: ofbiz
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ofbiz -d ofbiz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Keycloak server
+  keycloak:
+    image: bitnami/keycloak:26.3.2
+    container_name: keycloak-dev
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ofbiz
+      KC_DB_PASSWORD: ofbiz
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./target:/opt/bitnami/keycloak/providers-source:ro
+      - keycloak_providers:/opt/bitnami/keycloak/providers
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "ofbiz.local:host-gateway"
+    entrypoint: |
+      sh -c "
+        echo 'Copying SPI JAR to providers directory...'
+        [ -f "/opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar" ] || cp /opt/bitnami/keycloak/providers-source/keycloak-ofbiz-spi-0.*.jar /opt/bitnami/keycloak/providers/keycloak-ofbiz-spi.jar
+        echo 'JAR copied successfully'
+        ls -la /opt/bitnami/keycloak/providers/
+        echo 'Building Keycloak with new provider...'
+        /opt/bitnami/keycloak/bin/kc.sh build
+        echo 'Starting Keycloak...'
+        /opt/bitnami/keycloak/bin/kc.sh start-dev
+      "
+
+  # React SPA for testing
+  spa-test:
+    build:
+      context: ./spa-test
+      dockerfile: Dockerfile.dev
+    container_name: ofbiz-spa-test
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./spa-test/src:/app/src
+      - ./spa-test/public:/app/public
+      - ./spa-test/.env:/app/.env:ro
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - DANGEROUSLY_DISABLE_HOST_CHECK=true
+      - HOST=0.0.0.0
+      - PORT=3000
+      - REACT_APP_KEYCLOAK_URL=http://keycloak.local:8090/
+      - REACT_APP_KEYCLOAK_REALM=ofbiz
+      - REACT_APP_KEYCLOAK_CLIENT_ID=ofbiz-spa-test
+    depends_on:
+      - keycloak
+    stdin_open: true
+    tty: true
+    extra_hosts:
+      - "keycloak.local:host-gateway"
+      - "ofbiz.local:host-gateway"
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8091:80"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  keycloak_providers:
